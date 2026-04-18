@@ -110,8 +110,17 @@ export interface Config {
   zigAsan: boolean;
   assertions: boolean;
   logs: boolean;
-  /** x64-only: target nehalem (no AVX) instead of haswell. */
+  /** x64-only: target nehalem (no AVX) instead of haswell. Derived from `x64Cpu !== "haswell"`. */
   baseline: boolean;
+  /**
+   * x64-only: sub-haswell target tier.
+   *   "haswell" = default (AVX2, BMI2)
+   *   "nehalem" = `baseline` build (SSE4.2 + POPCNT, no AVX)
+   *   "penryn"  = pre-SSE4.2 (SSE4.1 only) — local WebKit build only,
+   *               no prebuilt tarballs exist. WebAssembly SIMD (v128) is
+   *               unsupported at runtime on this tier (LLInt emits AVX).
+   */
+  x64Cpu: "haswell" | "nehalem" | "penryn";
   canary: boolean;
   /** MinSizeRel → optimize for size. */
   smol: boolean;
@@ -220,6 +229,7 @@ export interface PartialConfig {
   assertions?: boolean;
   logs?: boolean;
   baseline?: boolean;
+  x64Cpu?: "haswell" | "nehalem" | "penryn";
   canary?: boolean;
   staticSqlite?: boolean;
   staticLibatomic?: boolean;
@@ -409,7 +419,12 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
   // Logs: on by default in debug non-test
   const logs = partial.logs ?? debug;
 
-  const baseline = partial.baseline ?? false;
+  // x64Cpu is the source of truth; `baseline` is derived. If only `baseline`
+  // was passed (legacy CLI), map it to nehalem. If both were passed, x64Cpu
+  // wins — callers using the new knob shouldn't have their choice silently
+  // overridden by an old `baseline: false` default.
+  const x64Cpu = partial.x64Cpu ?? (partial.baseline ? "nehalem" : "haswell");
+  const baseline = x64Cpu !== "haswell";
   const canary = partial.canary ?? true;
   const canaryRevision = canary ? "1" : "0";
 
@@ -455,6 +470,15 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
 
   // ─── Validation ───
   assert(!baseline || x64, "baseline=true requires arch=x64 (baseline disables AVX which is x64-only)");
+  assert(
+    x64Cpu === "haswell" || x64,
+    "x64Cpu requires arch=x64 (sub-haswell tiers are x64-only)",
+  );
+  // No prebuilt WebKit exists below nehalem; force --webkit=local for penryn.
+  assert(
+    x64Cpu !== "penryn" || partial.webkit === "local",
+    "x64Cpu=penryn requires --webkit=local (no prebuilt WebKit tarballs below nehalem; clone oven-sh/WebKit to vendor/WebKit/)",
+  );
   assert(!valgrind || linux, "valgrind=true requires os=linux");
   assert(!(asan && valgrind), "Cannot enable both asan and valgrind simultaneously");
   assert(os !== "linux" || abi !== undefined, "Linux builds require an abi (gnu or musl)");
@@ -510,6 +534,7 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     assertions,
     logs,
     baseline,
+    x64Cpu,
     canary,
     smol,
     staticSqlite,
@@ -784,7 +809,8 @@ export function formatConfig(cfg: Config, exe: string): string {
   if (cfg.asan) features.push("asan");
   if (cfg.assertions) features.push("assertions");
   if (cfg.logs) features.push("logs");
-  if (cfg.baseline) features.push("baseline");
+  if (cfg.x64Cpu === "penryn") features.push("x64-cpu:penryn");
+  else if (cfg.baseline) features.push("baseline");
   if (cfg.valgrind) features.push("valgrind");
   if (cfg.fuzzilli) features.push("fuzzilli");
   if (!cfg.canary) features.push("canary:off");

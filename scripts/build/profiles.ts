@@ -62,6 +62,36 @@ export const profiles = {
   },
 
   /**
+   * Pre-SSE4.2 build targeting Penryn (late Core 2 Duo, 2008). Forces local
+   * WebKit because no prebuilt tarballs exist below nehalem. LTO on to match
+   * the oven-sh/WebKit Dockerfile release build — without it, webkit.ts:260
+   * silently downgrades the nested WebKit build to RelWithDebInfo (no -O3).
+   *
+   * Runtime caveats — verified by disassembly of the produced binary:
+   *
+   *   1. WebAssembly v128 SIMD opcodes SIGILL. JSC's in-place WASM
+   *      interpreter (InPlaceInterpreter64.asm) emits AVX ops (vpshufb,
+   *      vroundps, vroundpd) unconditionally in `ipint_simd_*`.
+   *
+   *   2. WebAssembly i32.popcnt / i64.popcnt opcodes SIGILL. The LLInt
+   *      WASM interpreter's `ipint_i32_popcnt` / `ipint_i64_popcnt`
+   *      symbols emit native `popcntq` directly (Penryn lacks POPCNT;
+   *      Nehalem is the floor for that).
+   *
+   * Plain JS (all four JIT tiers, including FTL via runtime supportsAVX()
+   * fallbacks), Bun APIs, and WASM modules that don't use SIMD or popcnt
+   * all work. PCLMUL appears in the binary but only in zlib-ng's
+   * runtime-dispatched CRC32 fast path, and POPCNT also appears in
+   * simdutf's `westmere` kernel — both behind runtime CPU dispatch.
+   */
+  "release-penryn": {
+    buildType: "Release",
+    webkit: "local",
+    x64Cpu: "penryn",
+    lto: true,
+  },
+
+  /**
    * Release + assertions + logs. RelWithDebInfo → zig gets ReleaseSafe
    * (runtime safety checks), matching the old cmake build:assert script.
    */
