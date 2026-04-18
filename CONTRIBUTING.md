@@ -292,6 +292,54 @@ If you are using a JSC debug build and using VScode, make sure to run the `C/C++
 
 Note that if you make changes to our [WebKit fork](https://github.com/oven-sh/WebKit), you will also have to change `WEBKIT_VERSION` in [`scripts/build/deps/webkit.ts`](/scripts/build/deps/webkit.ts) to point to the commit hash.
 
+## Building for pre-SSE4.2 CPUs (Penryn / SSE4.1)
+
+Bun's standard and `--baseline` builds both require SSE4.2 (Nehalem, 2008+). For older x86_64 hardware that has SSE4.1 but not SSE4.2 (Penryn-class — late Core 2 Duo, early Atoms), use the `release-penryn` profile. This is a local-only build path; no prebuilt artifact is shipped.
+
+```bash
+# 1. Clone WebKit at the pinned commit (no Penryn prebuilt exists)
+$ git clone https://github.com/oven-sh/WebKit vendor/WebKit
+$ git -C vendor/WebKit checkout <commit_hash>   # see WEBKIT_VERSION in scripts/build/deps/webkit.ts
+
+# 2. Build — sets -march=penryn for bun + all deps + the local WebKit
+$ bun run build --profile=release-penryn --build-dir=build/release-penryn
+```
+
+What the profile does:
+
+- Sets `-march=penryn` for bun's own C/C++, all vendored deps, and the nested WebKit cmake invocation.
+- Sets `-Dcpu=penryn` for the Zig portion of the build.
+- Forces `--webkit=local` (asserted at configure time — no prebuilt tarballs exist below `nehalem`).
+- Enables LTO with `-fwhole-program-vtables -fforce-emit-vtables` to match the official `oven-sh/WebKit` Dockerfile release flags. Without LTO, the nested WebKit build silently downgrades to `RelWithDebInfo` (no `-O3`).
+
+Adding a new CLI override `--x64-cpu=penryn` works on top of any other profile too, e.g. `bun run build --profile=release-local --x64-cpu=penryn`.
+
+### Runtime caveats
+
+JSC's runtime CPU dispatch handles SSE4.2/AVX/AVX2 fallbacks for plain JavaScript across all four JIT tiers. Two narrow code paths still emit post-Penryn instructions unconditionally and will SIGILL if exercised:
+
+| Code path | Symbol(s) | Op emitted | Penryn impact |
+|-----------|-----------|------------|---------------|
+| WASM v128 SIMD opcodes | `ipint_simd_*` (LLInt) | `vpshufb`, `vroundps`, `vroundpd` (AVX) | guest module using v128 SIMD SIGILLs |
+| WASM `i{32,64}.popcnt` opcodes | `ipint_i32_popcnt`, `ipint_i64_popcnt` (LLInt) | native `popcntq` | guest module using popcnt SIGILLs |
+
+Plain JS, Bun APIs (`Bun.serve`, `fetch`, `Bun.sql`, etc.), and WASM modules that don't use those specific opcodes all work. PCLMUL and POPCNT also appear elsewhere in the binary (`vendor/zlib/arch/x86/crc32_pclmulqdq_tpl.h`, `simdutf::westmere::*`) but those are runtime-dispatched and only execute when the CPU advertises support.
+
+### Verifying the binary
+
+```sh
+# Quick check from the host (still on a modern CPU): no SSE4.2 / POPCNT
+# in static code outside runtime-dispatched zlib-ng / simdutf paths.
+$ llvm-objdump -d build/release-penryn/bun \
+    | rg -i 'pcmpestri|pcmpistri|crc32[bwdq]'
+
+# Run on emulated Penryn:
+$ qemu-x86_64 -cpu Penryn build/release-penryn/bun -e 'console.log(Bun.version)'
+
+# Pin the floor: -cpu Conroe (no SSE4.1) should SIGILL:
+$ qemu-x86_64 -cpu Conroe build/release-penryn/bun -e 'console.log(Bun.version)'
+```
+
 ## Troubleshooting
 
 ### 'span' file not found on Ubuntu

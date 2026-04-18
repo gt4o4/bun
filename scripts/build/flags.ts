@@ -52,13 +52,18 @@ export const cpuTargetFlags: Flag[] = [
     desc: "ARM64 Windows: clang-cl prefix required (/clang: passes to clang)",
   },
   {
+    flag: "-march=penryn",
+    when: c => c.x64 && c.x64Cpu === "penryn",
+    desc: "x64 pre-SSE4.2: Penryn (2008) — SSE4.1 only, no SSE4.2/POPCNT/AVX",
+  },
+  {
     flag: "-march=nehalem",
-    when: c => c.x64 && c.baseline,
-    desc: "x64 baseline: Nehalem (2008) — no AVX, broadest compatibility",
+    when: c => c.x64 && c.x64Cpu === "nehalem",
+    desc: "x64 baseline: Nehalem (2008) — SSE4.2 + POPCNT, no AVX",
   },
   {
     flag: "-march=haswell",
-    when: c => c.x64 && !c.baseline,
+    when: c => c.x64 && c.x64Cpu === "haswell",
     desc: "x64 default: Haswell (2013) — AVX2, BMI2 available",
   },
 ];

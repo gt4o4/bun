@@ -332,8 +332,11 @@ Bun has specific CPU requirements based on the binary you're using:
 </Tabs>
 
 <Note>
-  Bun does not support CPUs older than the baseline target, which mandates the SSE4.2 extension. macOS requires version
-  13.0 or later.
+  Prebuilt Bun binaries do not support CPUs older than the baseline target, which mandates the SSE4.2 extension. macOS
+  requires version 13.0 or later. Older x64 hardware (Penryn-class — SSE4.1 but no SSE4.2, e.g. late Core 2 Duo) can be
+  supported by building from source with `--profile=release-penryn`. See
+  [CONTRIBUTING.md](https://github.com/oven-sh/bun/blob/main/CONTRIBUTING.md#building-for-pre-sse42-cpus-penryn--sse41)
+  for the procedure and runtime caveats (WebAssembly SIMD and `popcnt` opcodes are not supported on that tier).
 </Note>
 
 ---

@@ -121,7 +121,7 @@ export function zigOptimize(cfg: Config): "Debug" | "ReleaseFast" | "ReleaseSafe
  *
  * arm64: apple_m1 (darwin), cortex_a76 (windows — no ARMv9 windows yet),
  *   native (linux — no baseline arm64 builds needed).
- * x64: nehalem (baseline, pre-AVX), haswell (AVX2).
+ * x64: penryn (pre-SSE4.2), nehalem (baseline, pre-AVX), haswell (AVX2).
  */
 export function zigCpu(cfg: Config): string {
   if (cfg.arm64) {
@@ -130,7 +130,14 @@ export function zigCpu(cfg: Config): string {
     return "native";
   }
   // x64
-  return cfg.baseline ? "nehalem" : "haswell";
+  switch (cfg.x64Cpu) {
+    case "penryn":
+      return "penryn";
+    case "nehalem":
+      return "nehalem";
+    case "haswell":
+      return "haswell";
+  }
 }
 
 /**
