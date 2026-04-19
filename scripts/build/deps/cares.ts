@@ -58,45 +58,62 @@ export const cares: Dependency = {
     commit: CARES_COMMIT,
   }),
 
-  build: cfg => ({
-    kind: "direct",
-    pic: true,
-    sources: SOURCES.map(s => `src/lib/${s}.c`),
-    includes: ["include", "src/lib", "src/lib/include"],
-    defines: {
-      HAVE_CONFIG_H: 1,
-      CARES_BUILDING_LIBRARY: true,
-      ...(cfg.windows && {
-        CARES_STATICLIB: true,
-        WIN32_LEAN_AND_MEAN: true,
-        _CRT_SECURE_NO_DEPRECATE: true,
-        _CRT_NONSTDC_NO_DEPRECATE: true,
-      }),
-      ...(cfg.linux && {
-        _GNU_SOURCE: true,
-        _POSIX_C_SOURCE: 200809,
-        _XOPEN_SOURCE: 700,
-      }),
-      ...(cfg.darwin && { _DARWIN_C_SOURCE: true }),
-      ...(cfg.freebsd && { __BSD_VISIBLE: 1 }),
-    },
-    // _WIN32_WINNT must be the hex LITERAL 0x0602, not its decimal value —
-    // sdkddkver.h derives NTDDI_VERSION via token paste (`ver##0000`), so
-    // `1538##0000` would yield 15380000 instead of 0x06020000. Can't go
-    // through DirectBuild.defines (numbers emit decimal).
-    ...(cfg.windows && { cflags: ["-D_WIN32_WINNT=0x0602"] }),
-    headers: {
-      "ares_config.h": configH(cfg),
-      "ares_build.h": buildH(cfg),
-    },
-  }),
+  build: cfg => {
+    if (cfg.systemDeps.has("cares")) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "direct",
+      pic: true,
+      sources: SOURCES.map(s => `src/lib/${s}.c`),
+      includes: ["include", "src/lib", "src/lib/include"],
+      defines: {
+        HAVE_CONFIG_H: 1,
+        CARES_BUILDING_LIBRARY: true,
+        ...(cfg.windows && {
+          CARES_STATICLIB: true,
+          WIN32_LEAN_AND_MEAN: true,
+          _CRT_SECURE_NO_DEPRECATE: true,
+          _CRT_NONSTDC_NO_DEPRECATE: true,
+        }),
+        ...(cfg.linux && {
+          _GNU_SOURCE: true,
+          _POSIX_C_SOURCE: 200809,
+          _XOPEN_SOURCE: 700,
+        }),
+        ...(cfg.darwin && { _DARWIN_C_SOURCE: true }),
+        ...(cfg.freebsd && { __BSD_VISIBLE: 1 }),
+      },
+      // _WIN32_WINNT must be the hex LITERAL 0x0602, not its decimal value —
+      // sdkddkver.h derives NTDDI_VERSION via token paste (`ver##0000`), so
+      // `1538##0000` would yield 15380000 instead of 0x06020000. Can't go
+      // through DirectBuild.defines (numbers emit decimal).
+      ...(cfg.windows && { cflags: ["-D_WIN32_WINNT=0x0602"] }),
+      headers: {
+        "ares_config.h": configH(cfg),
+        "ares_build.h": buildH(cfg),
+      },
+    };
+  },
 
   // ares_build.h is generated into the build dir; consumers (bun's bindings,
   // node:dns) include it via <ares.h> → "ares_build.h".
-  provides: cfg => ({
-    libs: [],
-    includes: ["include", depBuildDir(cfg, "cares")],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("cares")) {
+      return {
+        libs: [],
+        includes: ["include"],
+        // -lcares matches the soname (libcares.so.2) regardless of nixpkgs
+        // attribute name (which is c-ares with a dash).
+        linkFlags: ["-lcares"],
+        trackLibs: ["cares"],
+      };
+    }
+    return {
+      libs: [],
+      includes: ["include", depBuildDir(cfg, "cares")],
+    };
+  },
 };
 
 // ───────────────────────────────────────────────────────────────────────────
