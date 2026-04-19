@@ -209,6 +209,15 @@ export interface Config {
   zigCommit: string;
   /** WebKit commit. Default in versions.ts; override to test a WebKit branch. */
   webkitVersion: string;
+
+  /**
+   * Names of vendored deps to link from the system instead of building from
+   * source. Each name must match the corresponding `Dependency.name` and
+   * that dep's `source()` must branch on `cfg.systemDeps.has(name)` to
+   * return a `kind: "system"` Source. Profiles set this; CLI overrides via
+   * `--system-deps=zstd,brotli`. Empty by default — every dep stays vendored.
+   */
+  systemDeps: ReadonlySet<string>;
 }
 
 /**
@@ -246,6 +255,12 @@ export interface PartialConfig {
   nodejsAbiVersion?: string;
   zigCommit?: string;
   webkitVersion?: string;
+  /**
+   * Dep names to link from the system. Profiles use this to opt deps into
+   * `kind: "system"` mode. CLI flag `--system-deps=zstd,brotli` is parsed
+   * by build.ts and ends up here.
+   */
+  systemDeps?: readonly string[];
 }
 
 /**
@@ -579,6 +594,10 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     canaryRevision,
     zigCommit,
     webkitVersion,
+    // Defensive copy: profiles + CLI hand us a readonly array literal,
+    // freeze the resulting set so downstream can't mutate it (which would
+    // cause spooky test interactions when configure runs twice in-process).
+    systemDeps: new Set(partial.systemDeps ?? []),
   };
 }
 

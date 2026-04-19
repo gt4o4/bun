@@ -206,6 +206,50 @@ export function clangTargetArch(clang: string): Arch | undefined {
 }
 
 /**
+ * Resolve a system library name (e.g. "zstd") to the absolute path the C
+ * compiler would actually link. Used by `kind: "system"` source resolution
+ * (source.ts) to populate ResolvedDep.trackedLibFiles, which become
+ * implicit inputs of the link rule so a Nix store path bump triggers relink.
+ *
+ * Returns null when the library isn't found in the toolchain's search paths
+ * — caller treats this as "skip mtime tracking", not an error. Dev machines
+ * without the corresponding -dev package would otherwise fail-fast at
+ * configure time on a build that's still going to fail at link time anyway,
+ * with a worse error message.
+ *
+ * Mechanics: `clang -print-file-name=libfoo.so` returns the resolved path
+ * if found, or echoes the bare query if not. We treat "no path component"
+ * as "not found" — both cases the compiler will fall through to the linker
+ * for resolution; the linker's diagnostic is more informative.
+ *
+ * Per-arg cache (~10 lookups per build, but resolveConfig may be called
+ * multiple times under tests).
+ */
+const systemLibCache = new Map<string, string | null>();
+export function resolveSystemLib(cc: string, name: string): string | null {
+  const key = `${cc}\0${name}`;
+  const cached = systemLibCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const result = spawnSync(cc, [`-print-file-name=lib${name}.so`], {
+    encoding: "utf8",
+    timeout: 10_000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let resolved: string | null = null;
+  if (!result.error && result.status === 0) {
+    const path = (result.stdout ?? "").trim();
+    // A path with at least one separator means clang found it; bare
+    // `lib<name>.so` means it didn't.
+    if (path.length > 0 && path.includes("/")) {
+      resolved = path;
+    }
+  }
+  systemLibCache.set(key, resolved);
+  return resolved;
+}
+
+/**
  * Find a tool. Searches provided paths first, then $PATH.
  * Returns the absolute path or undefined (if not required).
  */

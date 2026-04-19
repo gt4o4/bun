@@ -30,6 +30,7 @@ import { writeIfChanged } from "./fs.ts";
 import type { Ninja } from "./ninja.ts";
 import { quote, quoteArgs, slash } from "./shell.ts";
 import { streamPath } from "./stream.ts";
+import { resolveSystemLib } from "./tools.ts";
 
 /**
  * If the source dir exists with a stale (or missing) identity stamp,
@@ -155,6 +156,39 @@ export type Source =
        * (WebKit, nodejs-headers) override to `cacheDir/<name>-<version>/`.
        */
       destDir?: string;
+    }
+  | {
+      /**
+       * Library is supplied by the host system / package manager — we only
+       * pass `-l<name>` flags to the linker. No fetch, no build, no headers
+       * vendored. Used when a dep is available everywhere we ship and shared-
+       * library page deduplication across processes is worth the dynamic-link
+       * cost. ICU has been doing this informally via `bun.ts::systemLibs()`;
+       * this variant lets it (and other deps like zstd) move into the regular
+       * `Dependency` flow.
+       */
+      kind: "system";
+      /**
+       * Linker args passed verbatim into ldflags. Typically `-l<name>` per
+       * library (`["-lzstd"]`); multi-lib deps push every name in the
+       * intended link order (`["-lbrotlidec", "-lbrotlienc", "-lbrotlicommon"]`).
+       * Toolchain default decides static-vs-shared; on Nix the .so wins.
+       */
+      linkFlags: string[];
+      /**
+       * Library names (no `lib` prefix, no `.so` suffix) the link rule should
+       * stat as implicit inputs. Resolved at configure time via
+       * `<cc> -print-file-name=lib<name>.so`. Resolution failures are silent
+       * (e.g. on dev machines without -dev packages installed) — the link
+       * still works via -l, only mtime tracking is missing.
+       */
+      trackLibs?: string[];
+      /**
+       * Extra `-I` paths. Usually empty: nixpkgs.dev outputs flow into CPATH
+       * and /usr/include is on the default search path. Set when a header
+       * lives somewhere weird.
+       */
+      extraIncludes?: string[];
     };
 
 /**
@@ -348,6 +382,26 @@ export interface Provides {
    * a single-file dep with no build system (picohttpparser: one .c file).
    */
   sources?: string[];
+  /**
+   * Free-form linker flags pushed verbatim into ldflags. For deps linked
+   * dynamically against system libraries: e.g. zstd in `cfg.systemDeps`
+   * mode returns `linkFlags: ["-lzstd"]` (and empty `libs`). Goes through
+   * the link rule's $ldflags, not $in — ninja can't stat a `-l` spec.
+   *
+   * Compatible with any source kind. Most useful with `kind: "github-archive"`
+   * + `build: "none"`: still fetch source for headers (e.g. build.zig
+   * translate_c reads vendor/zstd/lib/), skip the static-archive build,
+   * link the system .so via -l.
+   */
+  linkFlags?: string[];
+  /**
+   * Library names (no `lib`/`.so`) for ninja to stat as link-rule
+   * implicit inputs. Resolved at configure time via
+   * `<cc> -print-file-name=lib<name>.so`. Resolution failures are silent
+   * (dev box without -dev packages, etc.) — link still works via -l, only
+   * mtime tracking is missing.
+   */
+  trackLibs?: string[];
 }
 
 /**
@@ -418,6 +472,13 @@ export interface ResolvedDep {
   name: string;
   /** Absolute paths to .a/.lib/.o files for link(). */
   libs: string[];
+  /**
+   * Free-form linker flags (`-l<name>`, `-L<dir>`, `-Wl,...`) for system-
+   * supplied deps. Goes into ldflags, NOT $in — ninja can't stat a `-l`
+   * spec. Use `trackedLibFiles` for the resolved file paths if you need
+   * mtime tracking.
+   */
+  linkFlags?: string[];
   /** Absolute include paths for -I flags. */
   includes: string[];
   defines: string[];
@@ -433,6 +494,13 @@ export interface ResolvedDep {
    * the source stamp (.ref).
    */
   outputs: string[];
+  /**
+   * Resolved absolute paths to system library files (e.g. `/nix/store/.../
+   * libzstd.so.1.5.6`). Added as link rule `implicitInputs` so ninja relinks
+   * when a Nix store path changes. Empty when `Source.kind !== "system"` or
+   * when `<cc> -print-file-name` couldn't resolve the library.
+   */
+  trackedLibFiles?: string[];
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -615,6 +683,28 @@ export function resolveDep(
   const buildSpec = dep.build(cfg);
   const provides = dep.provides(cfg);
 
+  // ─── System: no fetch, no build, just -l flags into ldflags. ───
+  // For deps the host package manager supplies (system zstd/brotli/ICU on
+  // Nix). buildSpec and provides are intentionally ignored — definition
+  // returns no-ops there, all linkage info comes from `source`.
+  if (source.kind === "system") {
+    const trackedLibFiles = (source.trackLibs ?? [])
+      .map(name => resolveSystemLib(cfg.cc, name))
+      .filter((p): p is string => p !== null);
+    return {
+      name: dep.name,
+      libs: [],
+      linkFlags: [...source.linkFlags],
+      includes: source.extraIncludes ?? [],
+      defines: [],
+      sources: [],
+      // outputs feeds depHeaderSignal in bun.ts: relink if the resolved
+      // .so changes (Nix store path bump).
+      outputs: trackedLibFiles,
+      trackedLibFiles,
+    };
+  }
+
   // ─── Prebuilt: entire acquisition is download + extract. No build step. ───
   // Handled separately because there's no "source dir" in the usual sense —
   // the extracted tarball IS the output, and `provides.libs` are paths into
@@ -759,13 +849,25 @@ export function resolveDep(
     return inc === "." ? srcDir : resolve(srcDir, inc);
   });
 
+  // System linkage hooks via `provides`. Lets a dep keep its github-archive
+  // source (so build.zig translate_c can read headers from vendor/<dep>/) but
+  // skip the static-archive build and link the system .so via `-l<name>`.
+  // resolveSystemLib silently returns null when the library isn't in the
+  // toolchain's search paths — caller treats that as "skip mtime tracking",
+  // not an error.
+  const trackedLibFiles = (provides.trackLibs ?? [])
+    .map(name => resolveSystemLib(cfg.cc, name))
+    .filter((p): p is string => p !== null);
+
   return {
     name: dep.name,
     libs,
+    ...(provides.linkFlags !== undefined ? { linkFlags: [...provides.linkFlags] } : {}),
     includes,
     defines: provides.defines ?? [],
     sources: resolvedSources,
-    outputs,
+    outputs: trackedLibFiles.length > 0 ? [...outputs, ...trackedLibFiles] : outputs,
+    ...(trackedLibFiles.length > 0 ? { trackedLibFiles } : {}),
   };
 }
 
