@@ -17,21 +17,37 @@ export const libdeflate: Dependency = {
     commit: LIBDEFLATE_COMMIT,
   }),
 
-  build: () => ({
-    kind: "nested-cmake",
-    targets: ["libdeflate_static"],
-    args: {
-      LIBDEFLATE_BUILD_STATIC_LIB: "ON",
-      LIBDEFLATE_BUILD_SHARED_LIB: "OFF",
-      LIBDEFLATE_BUILD_GZIP: "OFF",
-    },
-  }),
+  build: cfg => {
+    if (cfg.systemDeps.has("libdeflate")) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "nested-cmake",
+      targets: ["libdeflate_static"],
+      args: {
+        LIBDEFLATE_BUILD_STATIC_LIB: "ON",
+        LIBDEFLATE_BUILD_SHARED_LIB: "OFF",
+        LIBDEFLATE_BUILD_GZIP: "OFF",
+      },
+    };
+  },
 
   // Windows output is `deflatestatic.lib`, unix is `libdeflate.a`. Same code,
   // different naming because libdeflate's CMakeLists uses a target-specific
   // OUTPUT_NAME on win32 (avoids the windows convention of prefixing "lib").
-  provides: cfg => ({
-    libs: [cfg.windows ? "deflatestatic" : "deflate"],
-    includes: ["."],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("libdeflate")) {
+      return {
+        libs: [],
+        // libdeflate.h sits at the source root.
+        includes: ["."],
+        linkFlags: ["-ldeflate"],
+        trackLibs: ["deflate"],
+      };
+    }
+    return {
+      libs: [cfg.windows ? "deflatestatic" : "deflate"],
+      includes: ["."],
+    };
+  },
 };

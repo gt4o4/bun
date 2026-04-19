@@ -6,6 +6,14 @@
  * Built in ZLIB_COMPAT mode so the ABI matches stock zlib (z_stream layout,
  * deflateInit_/inflateInit_ symbols). zlib.h is GENERATED into the build dir
  * by cmake configure — it does not exist in the source tree.
+ *
+ * `cfg.systemDeps.has("zlib")` mode swaps the static-archive build for
+ * `-lz`. Nixpkgs' zlib-ng in zlib-compat mode keeps the soname stable
+ * (libz.so.1), so the link line is portable. Note that we also lose the
+ * generated zlib.h on this path — for the very few sites that include
+ * <zlib.h> (mostly bun's NodeConstantsModule), we rely on the system zlib.h
+ * being binary-compatible, which it is for the symbols bun uses
+ * (deflate/inflate/gzipFile/etc.).
  */
 
 import type { Dependency } from "../source.ts";
@@ -29,35 +37,56 @@ export const zlib: Dependency = {
     commit: ZLIB_COMMIT,
   }),
 
+  // The clang-cl windows-arm64 patch isn't relevant on linux — keep it in
+  // the array unconditionally so identity hashing stays stable across modes,
+  // and so the patch still applies if someone enables systemDeps on a non-
+  // linux build (the patch is a no-op then but git apply will succeed).
   patches: [
     // clang-cl defines _MSC_VER but needs clang's <arm_neon.h>/<arm_acle.h>,
     // not MSVC's <arm64_neon.h>/<intrin.h>. Upstream gates on _MSC_VER alone.
     "patches/zlib/clang-cl-arm64.patch",
   ],
 
-  build: () => ({
-    kind: "nested-cmake",
-    targets: ["zlib-ng"],
-    args: {
-      ZLIB_COMPAT: "ON",
-      ZLIB_ENABLE_TESTS: "OFF",
-      WITH_GTEST: "OFF",
-      WITH_BENCHMARKS: "OFF",
-      // Runtime CPU detection: ship one binary that picks AVX512/AVX2/SSE2
-      // at startup. WITH_NATIVE_INSTRUCTIONS would hard-code -march=native.
-      WITH_NATIVE_INSTRUCTIONS: "OFF",
-      WITH_RUNTIME_CPU_DETECTION: "ON",
-      // zlib-ng 340f2f6e moved infback.c's distance-too-far-back check behind
-      // INFLATE_STRICT (default OFF). Upstream zlib has it unconditional. Bun
-      // doesn't call inflateBack(), but anything in-process linking the same
-      // lib could read adjacent heap on a malicious raw-deflate stream with
-      // windowBits<15. Hardens at zero perf cost to inflate() proper.
-      WITH_INFLATE_STRICT: "ON",
-      BUILD_SHARED_LIBS: "OFF",
-    },
-  }),
+  build: cfg => {
+    if (cfg.systemDeps.has("zlib")) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "nested-cmake",
+      targets: ["zlib-ng"],
+      args: {
+        ZLIB_COMPAT: "ON",
+        ZLIB_ENABLE_TESTS: "OFF",
+        WITH_GTEST: "OFF",
+        WITH_BENCHMARKS: "OFF",
+        // Runtime CPU detection: ship one binary that picks AVX512/AVX2/SSE2
+        // at startup. WITH_NATIVE_INSTRUCTIONS would hard-code -march=native.
+        WITH_NATIVE_INSTRUCTIONS: "OFF",
+        WITH_RUNTIME_CPU_DETECTION: "ON",
+        // zlib-ng 340f2f6e moved infback.c's distance-too-far-back check behind
+        // INFLATE_STRICT (default OFF). Upstream zlib has it unconditional. Bun
+        // doesn't call inflateBack(), but anything in-process linking the same
+        // lib could read adjacent heap on a malicious raw-deflate stream with
+        // windowBits<15. Hardens at zero perf cost to inflate() proper.
+        WITH_INFLATE_STRICT: "ON",
+        BUILD_SHARED_LIBS: "OFF",
+      },
+    };
+  },
 
   provides: cfg => {
+    if (cfg.systemDeps.has("zlib")) {
+      return {
+        libs: [],
+        // No -I: <zlib.h> resolves through the toolchain's default include
+        // path (CPATH from buildInputs). The system zlib.h is
+        // binary-compatible with our zlib-compat build for the symbols bun
+        // uses.
+        includes: [],
+        linkFlags: ["-lz"],
+        trackLibs: ["z"],
+      };
+    }
     // zlib-ng OUTPUT_NAME on unix → "z"; on MSVC → "zlibstatic" with
     // CMAKE_DEBUG_POSTFIX "d" (set inside if(MSVC), which clang-cl satisfies).
     let lib: string;
