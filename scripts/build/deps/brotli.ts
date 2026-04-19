@@ -30,6 +30,10 @@ const SOURCES = [
 export const brotli: Dependency = {
   name: "brotli",
 
+  // Always fetch — bun's C++ side reads <brotli/encode.h> / <brotli/decode.h>
+  // from the bundled `c/include`. Even in `cfg.systemDeps.has("brotli")` mode
+  // we keep the source so the included header set matches the version we
+  // pinned, decoupling from whatever brotli nixpkgs happens to ship.
   source: () => ({
     kind: "github-archive",
     repo: "google/brotli",
@@ -37,6 +41,9 @@ export const brotli: Dependency = {
   }),
 
   build: cfg => {
+    if (cfg.systemDeps.has("brotli")) {
+      return { kind: "none" };
+    }
     const spec: DirectBuild = {
       kind: "direct",
       sources: SOURCES.map(s => `c/${s}.c`),
@@ -66,8 +73,19 @@ export const brotli: Dependency = {
     return spec;
   },
 
-  provides: () => ({
-    libs: [],
-    includes: ["c/include"],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("brotli")) {
+      return {
+        libs: [],
+        includes: ["c/include"],
+        // Link order: dec/enc both reference common, common LAST.
+        linkFlags: ["-lbrotlidec", "-lbrotlienc", "-lbrotlicommon"],
+        trackLibs: ["brotlidec", "brotlienc", "brotlicommon"],
+      };
+    }
+    return {
+      libs: [],
+      includes: ["c/include"],
+    };
+  },
 };

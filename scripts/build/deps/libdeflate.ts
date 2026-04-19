@@ -21,28 +21,44 @@ export const libdeflate: Dependency = {
     commit: LIBDEFLATE_COMMIT,
   }),
 
-  build: () => ({
-    kind: "direct",
-    sources: [
-      "lib/utils.c",
-      "lib/arm/cpu_features.c",
-      "lib/x86/cpu_features.c",
-      "lib/deflate_compress.c",
-      "lib/deflate_decompress.c",
-      "lib/adler32.c",
-      "lib/zlib_compress.c",
-      "lib/zlib_decompress.c",
-      "lib/crc32.c",
-      "lib/gzip_compress.c",
-      "lib/gzip_decompress.c",
-    ],
-    // libdeflate.h + common_defs.h live at the repo root; sources reach
-    // lib/*.h by relative include from their own directory.
-    includes: ["."],
-  }),
+  build: cfg => {
+    if (cfg.systemDeps.has("libdeflate")) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "direct",
+      sources: [
+        "lib/utils.c",
+        "lib/arm/cpu_features.c",
+        "lib/x86/cpu_features.c",
+        "lib/deflate_compress.c",
+        "lib/deflate_decompress.c",
+        "lib/adler32.c",
+        "lib/zlib_compress.c",
+        "lib/zlib_decompress.c",
+        "lib/crc32.c",
+        "lib/gzip_compress.c",
+        "lib/gzip_decompress.c",
+      ],
+      // libdeflate.h + common_defs.h live at the repo root; sources reach
+      // lib/*.h by relative include from their own directory.
+      includes: ["."],
+    };
+  },
 
-  provides: () => ({
-    libs: [],
-    includes: ["."],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("libdeflate")) {
+      return {
+        libs: [],
+        // libdeflate.h sits at the source root.
+        includes: ["."],
+        linkFlags: ["-ldeflate"],
+        trackLibs: ["deflate"],
+      };
+    }
+    return {
+      libs: [],
+      includes: ["."],
+    };
+  },
 };

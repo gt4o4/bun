@@ -13,6 +13,10 @@
  *     functable.c picks the right kernel at process start via cpuid/auxv.
  *   - zlib.h / zconf.h come from .h.in templates by literal substitution
  *     (the only thing cmake's configure_file did here).
+ *
+ * `cfg.systemDeps.has("zlib")` mode swaps the static-archive build for
+ * `-lz`. Nixpkgs' zlib-ng in zlib-compat mode keeps the soname stable
+ * (libz.so.1), so the link line is portable.
  */
 
 import type { Dependency, DirectBuild, DirectSource } from "../source.ts";
@@ -128,6 +132,10 @@ export const zlib: Dependency = {
     commit: ZLIB_COMMIT,
   }),
 
+  // The clang-cl windows-arm64 patch isn't relevant on linux — keep it in
+  // the array unconditionally so identity hashing stays stable across modes,
+  // and so the patch still applies if someone enables systemDeps on a non-
+  // linux build (the patch is a no-op then but git apply will succeed).
   patches: [
     // clang-cl defines _MSC_VER but needs clang's <arm_neon.h>/<arm_acle.h>,
     // not MSVC's <arm64_neon.h>/<intrin.h>. Upstream gates on _MSC_VER alone.
@@ -135,6 +143,9 @@ export const zlib: Dependency = {
   ],
 
   build: cfg => {
+    if (cfg.systemDeps.has("zlib")) {
+      return { kind: "none" };
+    }
     const sources: Array<string | DirectSource> = CORE.map(s => `${s}.c`);
 
     const defines: Record<string, number | true> = {
@@ -237,8 +248,20 @@ export const zlib: Dependency = {
 
   // The substituted zlib.h / zconf.h land in the build dir, not the source
   // tree, so consumers (libarchive, bun's own bindings) include from there.
-  provides: cfg => ({
-    libs: [],
-    includes: [depBuildDir(cfg, "zlib")],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("zlib")) {
+      return {
+        libs: [],
+        // No -I: <zlib.h> resolves through the toolchain's default include
+        // path (CPATH from buildInputs).
+        includes: [],
+        linkFlags: ["-lz"],
+        trackLibs: ["z"],
+      };
+    }
+    return {
+      libs: [],
+      includes: [depBuildDir(cfg, "zlib")],
+    };
+  },
 };

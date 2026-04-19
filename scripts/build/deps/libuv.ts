@@ -32,35 +32,58 @@ const WIN = [
 export const libuv: Dependency = {
   name: "libuv",
 
-  enabled: cfg => cfg.windows,
+  source: cfg => {
+    if (cfg.systemDeps.has("libuv")) {
+      // nixpkgs-unstable ships libuv 1.52.0; bun's pin f3ce527e is ~45
+      // commits behind 1.52.0 but in its ancestry. On Linux bun only links
+      // libuv so node-api addons can resolve symbols against it; the C API
+      // is stable across these commits, so the drift is low-risk on this
+      // target. Revisit if behavioral regressions show up in addon users.
+      return { kind: "system", linkFlags: ["-luv"], trackLibs: ["uv"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "oven-sh/libuv",
+      commit: LIBUV_COMMIT,
+    };
+  },
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "oven-sh/libuv",
-    commit: LIBUV_COMMIT,
-  }),
+  // Windows: only platform where bun actually uses libuv at runtime.
+  // Non-windows + non-systemDeps: dep is disabled (node-api stubs are in-tree).
+  enabled: cfg => cfg.windows || cfg.systemDeps.has("libuv"),
 
-  build: () => ({
-    kind: "direct",
-    sources: [...SHARED.map(s => `src/${s}.c`), ...WIN.map(s => `src/win/${s}.c`)],
-    includes: ["include", "src"],
-    defines: {
-      WIN32_LEAN_AND_MEAN: true,
-      _CRT_DECLARE_NONSTDC_NAMES: 0,
-      WIN32: true,
-      _WINDOWS: true,
-    },
-    cflags: [
-      // Hex literal required — sdkddkver.h token-pastes `ver##0000`.
-      "-D_WIN32_WINNT=0x0A00",
-      "/clang:-fno-strict-aliasing",
-      "-Wno-int-conversion",
-      "/wd4996",
-    ],
-  }),
+  build: cfg => {
+    if (cfg.systemDeps.has("libuv")) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "direct",
+      sources: [...SHARED.map(s => `src/${s}.c`), ...WIN.map(s => `src/win/${s}.c`)],
+      includes: ["include", "src"],
+      defines: {
+        WIN32_LEAN_AND_MEAN: true,
+        _CRT_DECLARE_NONSTDC_NAMES: 0,
+        WIN32: true,
+        _WINDOWS: true,
+      },
+      cflags: [
+        // Hex literal required — sdkddkver.h token-pastes `ver##0000`.
+        "-D_WIN32_WINNT=0x0A00",
+        "/clang:-fno-strict-aliasing",
+        "-Wno-int-conversion",
+        "/wd4996",
+      ],
+    };
+  },
 
-  provides: () => ({
-    libs: [],
-    includes: ["include"],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("libuv")) {
+      // Headers come from nixpkgs libuv.dev via CPATH.
+      return { libs: [], includes: [] };
+    }
+    return {
+      libs: [],
+      includes: ["include"],
+    };
+  },
 };
