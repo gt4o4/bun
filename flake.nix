@@ -34,8 +34,14 @@
         # Node.js 24 - matching the bootstrap script (targets 24.3.0, actual version from nixpkgs-unstable)
         nodejs = pkgs.nodejs_24;
 
-        # Build tools and dependencies
-        packages = [
+        # ─────────────────────────────────────────────────────────────────────
+        # Shared between devShell and nix/bun-penryn.nix.
+        # ─────────────────────────────────────────────────────────────────────
+
+        # Build tools + libraries required to compile bun itself. The devShell
+        # adds GCC, debug tooling, and Chromium test deps on top; nix/bun-penryn
+        # consumes this list as-is.
+        bunPackages = [
           # Core build tools
           pkgs.cmake # Expected: 3.30+ on nixos-unstable as of 2025-10
           pkgs.ninja
@@ -46,7 +52,6 @@
           clang
           llvm
           lld
-          pkgs.gcc
           pkgs.rustc
           pkgs.cargo
           pkgs.go
@@ -71,14 +76,37 @@
           pkgs.libxml2
           pkgs.libiconv
 
-          # Development tools
+          # Archive tools used by the fetch pipeline
           pkgs.git
-          pkgs.curl
-          pkgs.wget
           pkgs.unzip
           pkgs.xz
+        ];
 
-          # Additional dependencies for Linux
+        # Common toolchain env exports. Identical in both the devShell
+        # (shellHook) and the bun-penryn derivation (configurePhase). Changing
+        # this here updates both — no drift.
+        commonToolchainEnv = ''
+          export CC="${pkgs.lib.getExe clang}"
+          export CXX="${pkgs.lib.getExe' clang "clang++"}"
+          export AR="${llvm}/bin/llvm-ar"
+          export RANLIB="${llvm}/bin/llvm-ranlib"
+          export CMAKE_C_COMPILER="$CC"
+          export CMAKE_CXX_COMPILER="$CXX"
+          export CMAKE_AR="$AR"
+          export CMAKE_RANLIB="$RANLIB"
+        '' + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+          export LD="${pkgs.lib.getExe' lld "ld.lld"}"
+          export NIX_CFLAGS_LINK="''${NIX_CFLAGS_LINK:+$NIX_CFLAGS_LINK }-fuse-ld=lld"
+        '';
+
+        # ─────────────────────────────────────────────────────────────────────
+        # devShell-only additions.
+        # ─────────────────────────────────────────────────────────────────────
+
+        devShellPackages = bunPackages ++ [
+          pkgs.gcc
+          pkgs.curl
+          pkgs.wget
         ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
           pkgs.gdb # for debugging core dumps (from bootstrap.sh line 1535)
 
@@ -130,25 +158,14 @@
         devShells.default = (pkgs.mkShell.override {
           stdenv = pkgs.clangStdenv;
         }) {
-          inherit packages;
+          packages = devShellPackages;
           hardeningDisable = [ "fortify" ];
 
-          shellHook = ''
-            # Set up build environment
-            export CC="${pkgs.lib.getExe clang}"
-            export CXX="${pkgs.lib.getExe' clang "clang++"}"
-            export AR="${llvm}/bin/llvm-ar"
-            export RANLIB="${llvm}/bin/llvm-ranlib"
-            export CMAKE_C_COMPILER="$CC"
-            export CMAKE_CXX_COMPILER="$CXX"
-            export CMAKE_AR="$AR"
-            export CMAKE_RANLIB="$RANLIB"
+          shellHook = commonToolchainEnv + ''
             export CMAKE_SYSTEM_PROCESSOR="$(uname -m)"
             export TMPDIR="''${TMPDIR:-/tmp}"
           '' + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-            export LD="${pkgs.lib.getExe' lld "ld.lld"}"
-            export NIX_CFLAGS_LINK="''${NIX_CFLAGS_LINK:+$NIX_CFLAGS_LINK }-fuse-ld=lld"
-            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath packages}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath devShellPackages}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           '' + ''
 
             # Print welcome message
@@ -170,6 +187,18 @@
           # Additional environment variables
           CMAKE_BUILD_TYPE = "Debug";
           ENABLE_CCACHE = "1";
+        };
+
+        packages = {
+          # `nix build .#bun-penryn` — reproducible Bun built for Penryn
+          # (pre-SSE4.2 x86_64). See nix/bun-penryn.nix for details.
+          bun-penryn = pkgs.callPackage ./nix/bun-penryn.nix {
+            inherit
+              self
+              bunPackages
+              commonToolchainEnv
+              ;
+          };
         };
       }
     );
