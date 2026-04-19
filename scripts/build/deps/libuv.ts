@@ -16,15 +16,31 @@ const LIBUV_COMMIT = "f3ce527ea940d926c40878ba5de219640c362811";
 export const libuv: Dependency = {
   name: "libuv",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "libuv/libuv",
-    commit: LIBUV_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("libuv")) {
+      // nixpkgs-unstable ships libuv 1.52.0; bun's pin f3ce527e is ~45
+      // commits behind 1.52.0 but in its ancestry. On Linux bun only links
+      // libuv so node-api addons can resolve symbols against it; the C API
+      // is stable across these commits, so the drift is low-risk on this
+      // target. Revisit if behavioral regressions show up in addon users.
+      return { kind: "system", linkFlags: ["-luv"], trackLibs: ["uv"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "libuv/libuv",
+      commit: LIBUV_COMMIT,
+    };
+  },
 
+  // Windows-only patch. Kept in the identity hash regardless of systemDeps
+  // so identity stays stable across configurations — the patch is a no-op
+  // when source is kind:"system" (no fetch → no apply).
   patches: ["patches/libuv/fix-win-pipe-cancel-race.patch"],
 
   build: cfg => {
+    if (cfg.systemDeps.has("libuv")) {
+      return { kind: "none" };
+    }
     const spec: NestedCmakeBuild = {
       kind: "nested-cmake",
       targets: ["uv_a"],
@@ -45,11 +61,17 @@ export const libuv: Dependency = {
     return spec;
   },
 
-  provides: cfg => ({
-    // uv_a → libuv.lib on windows (the cmake target sets OUTPUT_NAME=libuv),
-    // libuv's cmake sets OUTPUT_NAME=libuv on Windows to avoid conflicts
-    // with system uv.lib. Unix uses the bare name.
-    libs: [cfg.windows ? "libuv" : "uv"],
-    includes: ["include"],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("libuv")) {
+      // Headers come from nixpkgs libuv.dev via CPATH.
+      return { libs: [], includes: [] };
+    }
+    return {
+      // uv_a → libuv.lib on windows (the cmake target sets OUTPUT_NAME=libuv),
+      // libuv's cmake sets OUTPUT_NAME=libuv on Windows to avoid conflicts
+      // with system uv.lib. Unix uses the bare name.
+      libs: [cfg.windows ? "libuv" : "uv"],
+      includes: ["include"],
+    };
+  },
 };

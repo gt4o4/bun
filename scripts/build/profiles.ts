@@ -89,6 +89,26 @@ export const profiles = {
     webkit: "local",
     x64Cpu: "penryn",
     lto: true,
+    // Link unpatched, ABI-stable deps from the system instead of statically
+    // bundling them. Penryn-class boxes are typically running multiple bun
+    // workers; shared-library .text pages dedup across processes for an
+    // RSS win that the static-only build doesn't get. See
+    // scripts/build/source.ts Provides.linkFlags wiring.
+    //
+    // Each dep still fetches its github tarball (translate_c reads zstd.h
+    // out of vendor/zstd/lib, and the C++ side prefers the bundled headers
+    // for ABI consistency) — only the static-archive build is skipped.
+    //
+    // libuv on Linux is only referenced for node-api addon symbol resolution
+    // (bun's event loop is custom kqueue/epoll direct). The C API is stable
+    // across bun's pinned commit → nixpkgs 1.52.0 (~45 commits), so the
+    // drift is low-risk on this target; revisit if addon users regress.
+    // hdrhistogram nixpkgs version matches bun's pin exactly.
+    //
+    // Skipped: boringssl/mimalloc/tinycc (forks), libarchive/lolhtml/lshpack
+    // (load-bearing patches), highway (nixpkgs ships static-only, no RSS
+    // dedup benefit).
+    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv"],
   },
 
   /**

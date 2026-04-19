@@ -14,6 +14,16 @@
   coreutils,
   cacert,
   icu,
+  # System-linked deps for the release-penryn profile (scripts/build/profiles.ts
+  # systemDeps). The build still fetches each dep's github archive for headers,
+  # but skips the static-archive build and links the .so from these inputs.
+  zstd,
+  brotli,
+  libdeflate,
+  c-ares,
+  zlib-ng,
+  hdrhistogram_c,
+  libuv,
   autoPatchelfHook,
 }:
 # `bun` is listed above because it's needed in the FOD's `nativeBuildInputs`
@@ -212,6 +222,29 @@ let
   #
   # Three workspaces run `bun install` during codegen: repo root (esbuild +
   # lezer-cpp), packages/bun-error (preact), src/node-fallbacks (node polyfills).
+  # buildInputs hoisted here so we can both consume them in the derivation
+  # and reference their lib dirs in LD_LIBRARY_PATH at smoke-test time.
+  # The smoke test runs *before* fixupPhase patches RPATH, so the dynamic
+  # loader needs LD_LIBRARY_PATH to find these system .so files at link-rule
+  # `--revision` time. autoPatchelfHook fixes RPATH afterward and the
+  # installed binary doesn't need LD_LIBRARY_PATH.
+  # zlib-ng needs ZLIB_COMPAT=ON to ship libz.so.1 (stock zlib ABI). The
+  # default nixpkgs build targets libz-ng.so.2 which -lz can't find. bun
+  # already builds the vendored copy with ZLIB_COMPAT=ON, so the compat
+  # override keeps behavior identical, just dynamically linked.
+  zlibNgCompat = zlib-ng.override { withZlibCompat = true; };
+
+  bunBuildInputs = [
+    icu
+    zstd
+    brotli
+    libdeflate
+    c-ares
+    zlibNgCompat
+    hdrhistogram_c
+    libuv
+  ];
+
   bunNodeModules = stdenv.mkDerivation {
     pname = "bun-penryn-node-modules";
     version = bunVersion;
@@ -290,9 +323,13 @@ stdenv.mkDerivation {
     coreutils
     autoPatchelfHook
   ];
-  buildInputs = [
-    icu
-  ];
+  # Each system-linked dep here is wired through scripts/build/profiles.ts
+  # (release-penryn.systemDeps) and the corresponding deps/<name>.ts file.
+  # The github archive is still fetched (translate_c needs zstd headers,
+  # libarchive's check_include_file needs zlib's symbols visible), but the
+  # static-archive build is skipped and -l<name> picks up the .so here.
+  # zlib-ng in zlib-compat mode keeps the libz.so.1 soname stable.
+  buildInputs = bunBuildInputs;
 
   dontUseCmakeConfigure = true;
 
@@ -318,11 +355,15 @@ stdenv.mkDerivation {
 
     mkdir -p vendor
 
-    # CARGO_HOME defaults to $HOME/.cargo which is unwritable in the Nix
-    # sandbox ($HOME = /homeless-shelter). Set it here (instead of later with
-    # the rest of the toolchain env) because step 1b below writes into it.
+    # Sandbox-friendly cache dirs. The toolchain defaults
+    # ($HOME/.cargo, $HOME/.bun) live under /homeless-shelter, which is
+    # read-only. Both vars are read at config-resolve time inside the build
+    # (config.ts: cacheDir = $BUN_INSTALL/build-cache, tools.ts: CARGO_HOME),
+    # so they have to be set before `bun scripts/build.ts` runs. Setting
+    # them here also lets step 1 + step 4 below reference them by name.
+    export BUN_INSTALL="$PWD/.bun-install"
     export CARGO_HOME="$PWD/.cargo-home"
-    mkdir -p "$CARGO_HOME"
+    mkdir -p "$BUN_INSTALL/build-cache" "$CARGO_HOME"
 
     # 1. Pre-populate scripts/build/fetch-cli.ts's tarball cache. The build's
     #    ninja graph has a `dep_fetch` edge per vendored dep that invokes
@@ -331,11 +372,10 @@ stdenv.mkDerivation {
     #    cache first and skips the network download if the tarball already
     #    exists (fetch-cli.ts:160-162), then does extract+patch+stamp itself
     #    — so we don't need to run fetch-cli ourselves.
-    tarballCache="$PWD/.bun-install/build-cache/tarballs"
-    mkdir -p "$tarballCache"
+    mkdir -p "$BUN_INSTALL/build-cache/tarballs"
     ${lib.concatStringsSep "\n" (
       lib.mapAttrsToList (name: d:
-        ''cp "${depTarballs.${name}}" "$tarballCache/${depCacheName name d}"''
+        ''cp "${depTarballs.${name}}" "$BUN_INSTALL/build-cache/tarballs/${depCacheName name d}"''
       ) deps
     )}
 
@@ -362,32 +402,25 @@ stdenv.mkDerivation {
     cp -r --no-preserve=mode "${webkitSrc}" vendor/WebKit
     chmod -R u+w vendor/WebKit
 
-    # 3. Zig compiler (oven-sh/zig fork — upstream zig won't work). The zip
-    #    contains a single top-level directory; hoist its contents into
-    #    vendor/zig/ exactly like scripts/build/zig.ts::fetchZig does.
-    echo "==> vendor/zig"
-    mkdir -p vendor/zig.tmp
-    unzip -q "${zigZip}" -d vendor/zig.tmp
-    inner=$(ls vendor/zig.tmp | head -1)
-    mv "vendor/zig.tmp/$inner" vendor/zig
-    rmdir vendor/zig.tmp
-    printf '%s' '${zigCommit}' > vendor/zig/.zig-commit
-    ln -sf zig vendor/zig/zig.exe
+    # 3. Zig compiler (oven-sh/zig fork — upstream zig won't work). Hand the
+    #    prefetched zip to fetch-cli via file:// URL. fetchZig (zig.ts:557)
+    #    handles extract + hoist + .zig-commit stamp + zig.exe/zls.exe
+    #    symlinks; bun's fetch() supports file:// natively.
+    echo "==> vendor/zig (via fetch-cli)"
+    bun scripts/build/fetch-cli.ts zig \
+      "file://${zigZip}" \
+      "$PWD/vendor/zig" \
+      '${zigCommit}'
 
-    # 4. Node.js headers. Build system expects them under $cacheDir, which
-    #    defaults to $BUN_INSTALL/build-cache (non-CI). Point BUN_INSTALL
-    #    into the build tree so everything stays in the sandbox.
-    echo "==> nodejs-headers"
-    export BUN_INSTALL="$PWD/.bun-install"
-    mkdir -p "$BUN_INSTALL/build-cache/nodejs-headers-${nodeVer}"
-    tar -xzf "${nodeHeaders}" -C "$BUN_INSTALL/build-cache/nodejs-headers-${nodeVer}" --strip-components=1
-    rm -rf "$BUN_INSTALL/build-cache/nodejs-headers-${nodeVer}/include/node/openssl"
-    rm -rf "$BUN_INSTALL/build-cache/nodejs-headers-${nodeVer}/include/node/uv"
-    rm -f  "$BUN_INSTALL/build-cache/nodejs-headers-${nodeVer}/include/node/uv.h"
-    # .identity stamp so fetch-cli.ts's prebuilt handler short-circuits
-    # (download.ts:186-192). Matches identity = cfg.nodejsVersion from
-    # scripts/build/deps/nodejs-headers.ts:28.
-    printf '%s\n' '${nodeVer}' > "$BUN_INSTALL/build-cache/nodejs-headers-${nodeVer}/.identity"
+    # 4. Node.js headers. Same trick: file:// URL into fetchPrebuilt
+    #    (download.ts:176). It handles extract + hoist + rm of conflicting
+    #    headers + .identity stamp.
+    echo "==> nodejs-headers (via fetch-cli)"
+    bun scripts/build/fetch-cli.ts prebuilt nodejs \
+      "file://${nodeHeaders}" \
+      "$BUN_INSTALL/build-cache/nodejs-headers-${nodeVer}" \
+      '${nodeVer}' \
+      include/node/openssl include/node/uv include/node/uv.h
 
     # 5. Toolchain env. commonToolchainEnv (CC/CXX/AR/RANLIB/LD) comes from
     #    flake.nix and matches the devShell shellHook exactly. Penryn-specific
@@ -396,7 +429,11 @@ stdenv.mkDerivation {
     export CMAKE_PREFIX_PATH="${icu.dev}:${icu.out}''${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
     export CPATH="${icu.dev}/include''${CPATH:+:$CPATH}"
     export LIBRARY_PATH="${icu.out}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
-    export LD_LIBRARY_PATH="${stdenv.cc.cc.lib}/lib:${icu.out}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # LD_LIBRARY_PATH for the buildPhase smoke test (`bun-profile --revision`
+    # runs before fixupPhase patches RPATH; without these paths the loader
+    # can't find the system .so files we just linked against).
+    # lib.makeLibraryPath joins <input>/lib for each input.
+    export LD_LIBRARY_PATH="${stdenv.cc.cc.lib}/lib:${lib.makeLibraryPath bunBuildInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export BUN_WEBKIT_PATH="$PWD/vendor/WebKit"
     # `src = self` strips .git, so git rev-parse HEAD would fail and the
     # revision baked into the binary would be zero_sha. We derive a 40-char

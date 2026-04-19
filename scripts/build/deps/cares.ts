@@ -17,29 +17,46 @@ export const cares: Dependency = {
     commit: CARES_COMMIT,
   }),
 
-  build: () => ({
-    kind: "nested-cmake",
-    targets: ["c-ares"],
-    // c-ares uses -fPIC internally for worker-thread sharing reasons (its
-    // thread-local resolver state has to be position-independent on some
-    // platforms). CARES_STATIC_PIC reflects this; we also set pic: true
-    // so our flag tracking stays consistent.
-    pic: true,
-    args: {
-      CARES_STATIC: "ON",
-      CARES_STATIC_PIC: "ON",
-      CARES_SHARED: "OFF",
-      CARES_BUILD_TOOLS: "OFF",
-      // Without this c-ares installs to ${prefix}/lib64 on some linux distros
-      // (multilib convention). We never install, but it also affects the
-      // build-tree output path on those systems.
-      CMAKE_INSTALL_LIBDIR: "lib",
-    },
-    libSubdir: "lib",
-  }),
+  build: cfg => {
+    if (cfg.systemDeps.has("cares")) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "nested-cmake",
+      targets: ["c-ares"],
+      // c-ares uses -fPIC internally for worker-thread sharing reasons (its
+      // thread-local resolver state has to be position-independent on some
+      // platforms). CARES_STATIC_PIC reflects this; we also set pic: true
+      // so our flag tracking stays consistent.
+      pic: true,
+      args: {
+        CARES_STATIC: "ON",
+        CARES_STATIC_PIC: "ON",
+        CARES_SHARED: "OFF",
+        CARES_BUILD_TOOLS: "OFF",
+        // Without this c-ares installs to ${prefix}/lib64 on some linux distros
+        // (multilib convention). We never install, but it also affects the
+        // build-tree output path on those systems.
+        CMAKE_INSTALL_LIBDIR: "lib",
+      },
+      libSubdir: "lib",
+    };
+  },
 
-  provides: () => ({
-    libs: ["cares"],
-    includes: ["include"],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("cares")) {
+      return {
+        libs: [],
+        includes: ["include"],
+        // -lcares matches the soname (libcares.so.2) regardless of nixpkgs
+        // attribute name (which is c-ares with a dash).
+        linkFlags: ["-lcares"],
+        trackLibs: ["cares"],
+      };
+    }
+    return {
+      libs: ["cares"],
+      includes: ["include"],
+    };
+  },
 };
