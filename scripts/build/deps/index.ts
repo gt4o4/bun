@@ -16,6 +16,7 @@ import { brotli } from "./brotli.ts";
 import { cares } from "./cares.ts";
 import { hdrhistogram } from "./hdrhistogram.ts";
 import { highway } from "./highway.ts";
+import { icu } from "./icu.ts";
 import { libarchive } from "./libarchive.ts";
 import { libdeflate } from "./libdeflate.ts";
 import { libuv } from "./libuv.ts";
@@ -57,9 +58,13 @@ export const allDeps: readonly Dependency[] = [
   sqlite,
   tinycc,
   boringssl,
-  // WebKit LAST in link order — WTF/JSC provide symbols that everything
-  // above might reference (via JavaScriptCore types in headers).
+  // WebKit before ICU — WTF/JSC reference ICU symbols (date math, regex,
+  // collation), and static linking is left-to-right.
   webkit,
+  // ICU last — pure system -l flags. Multi-arch decided per-platform inside
+  // deps/icu.ts. No-op on Linux + prebuilt WebKit and on Windows (those
+  // both supply ICU through deps/webkit.ts already).
+  icu,
 ];
 
 // Re-export individuals for direct import when needed.
@@ -69,6 +74,7 @@ export {
   cares,
   hdrhistogram,
   highway,
+  icu,
   libarchive,
   libdeflate,
   libuv,

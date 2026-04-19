@@ -65,17 +65,15 @@ function systemLibs(cfg: Config): string[] {
     } else {
       libs.push("-latomic");
     }
-    // Linux local WebKit: link system ICU (prebuilt bundles its own).
-    // Assumes system ICU is in default lib paths — true on most distros.
-    if (cfg.webkit === "local") {
-      libs.push("-licudata", "-licui18n", "-licuuc");
-    }
+    // ICU: deps/icu.ts handles the -licu* flags via the standard ResolvedDep
+    // pipeline (when webkit=local and on Linux). Removed from this function
+    // along with the matching darwin -licucore push.
   }
 
   if (cfg.darwin) {
-    // icucore: system ICU framework.
-    // resolv: DNS resolution (getaddrinfo et al).
-    libs.push("-licucore", "-lresolv");
+    // resolv: DNS resolution (getaddrinfo et al). ICU (-licucore) moved to
+    // deps/icu.ts.
+    libs.push("-lresolv");
   }
 
   if (cfg.windows) {
@@ -171,6 +169,9 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   // compiled source files (deps like picohttpparser that provide .c files
   // instead of a .a — we compile those alongside bun's own sources).
   const depLibs: string[] = [];
+  // Free-form linker flags from system deps (-lzstd etc.). Goes in $ldflags,
+  // not $in. Tracked separately so depLibs stays "files ninja can stat".
+  const depLinkFlags: string[] = [];
   const depIncludes: string[] = [];
   // Outputs of deps that provide headers — used as implicit inputs on PCH/cc/
   // no-PCH cxx so a dep rebuild invalidates compiles that #include its headers
@@ -179,9 +180,14 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   // no-op rebuild (ar has no restat) would otherwise cascade to a full PCH+cxx
   // rebuild. Link still gets every dep via depLibs.
   const depHeaderSignal: string[] = [];
+  // Resolved system .so paths for the link rule's implicitInputs — relink
+  // when a Nix store path bumps. Empty for source-built deps.
+  const depTrackedLibFiles: string[] = [];
   for (const d of deps) {
     depLibs.push(...d.libs);
+    depLinkFlags.push(...(d.linkFlags ?? []));
     depIncludes.push(...d.includes);
+    depTrackedLibFiles.push(...(d.trackedLibFiles ?? []));
     if (d.includes.length > 0) depHeaderSignal.push(...d.outputs);
   }
 
@@ -389,8 +395,24 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   const shims = emitShims(n, cfg);
   const exe = link(n, cfg, exeName, [...allObjects, ...zigObjects, ...windowsRes], {
     libs: depLibs,
-    flags: [...flags.ldflags, ...systemLibs(cfg), ...manifestLinkFlags(cfg), ...shims.ldflags],
-    implicitInputs: [...linkImplicitInputs(cfg), ...shims.implicitInputs],
+    flags: [
+      ...flags.ldflags,
+      // depLinkFlags goes BEFORE systemLibs(cfg). Static linking on most
+      // toolchains is left-to-right (a later -l can resolve an earlier
+      // archive's unresolved symbol). Deps in `allDeps` are ordered with
+      // providers AFTER users (zlib first, WebKit last). systemLibs is
+      // OS runtime (-lc, -lpthread) — those provide low-level symbols
+      // every dep ultimately depends on, so they belong at the end.
+      ...depLinkFlags,
+      ...systemLibs(cfg),
+      ...manifestLinkFlags(cfg),
+      ...shims.ldflags,
+    ],
+    implicitInputs: [
+      ...linkImplicitInputs(cfg),
+      ...shims.implicitInputs,
+      ...depTrackedLibFiles,
+    ],
   });
 
   // ─── Step 8: post-link (strip + dsymutil) ───
