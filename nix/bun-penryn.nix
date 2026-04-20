@@ -12,6 +12,9 @@
   rustPlatform,
   coreutils,
   cacert,
+  # For eval-time extraction of the zig zip into a dedicated store path —
+  # see `zigExtracted` below.
+  unzip,
   # System-linked deps for release-penryn (scripts/build/profiles.ts:systemDeps).
   # Headers flow from `.dev` via CPATH; zstd.dev is additionally symlinked
   # under vendor/zstd/lib to satisfy build.zig:681's hardcoded include path.
@@ -114,16 +117,16 @@ let
 
   # lolhtml runs `cargo build` → needs network. Materialize the crate tree
   # from its Cargo.lock at eval time via rustPlatform.importCargoLock.
-  lolhtmlLockfile = stdenv.mkDerivation {
-    name = "lolhtml-cargo-lock";
-    src = depTarballs.lolhtml;
-    dontUnpack = false;
-    dontConfigure = true;
-    dontBuild = true;
-    installPhase = "install -Dm644 c-api/Cargo.lock $out";
-  };
+  # The extraction step exists only to get Cargo.lock out of the tarball —
+  # it's inlined into the readFile arg.
   lolhtmlCargoVendor = rustPlatform.importCargoLock {
-    lockFileContents = builtins.readFile lolhtmlLockfile;
+    lockFileContents = builtins.readFile (stdenv.mkDerivation {
+      name = "lolhtml-cargo-lock";
+      src = depTarballs.lolhtml;
+      dontConfigure = true;
+      dontBuild = true;
+      installPhase = "install -Dm644 c-api/Cargo.lock $out";
+    });
   };
 
   webkitSrc = fetchgit {
@@ -134,10 +137,47 @@ let
     leaveDotGit = false;
   };
 
-  zigZip = fetchurl {
-    url = "https://github.com/oven-sh/zig/releases/download/autobuild-${zigCommit}/bootstrap-x86_64-linux-musl.zip";
-    hash = "sha256-Baetu5WBFqAUx/qtvfsemQpc6JQRJKkcVI9F0r8NDTg=";
-  };
+  # Extract the oven-sh/zig fork zip into a store path so we can point
+  # BUN_ZIG_PATH at it and skip the runtime fetch-cli zig call. NOT a
+  # drop-in for nixpkgs' `zig` (which is upstream source-built); this is
+  # the oven-sh fork prebuilt binary, kept local to keep the difference
+  # obvious at the call site.
+  #
+  # Delegates extraction to scripts/build/fetch-cli.ts so any future
+  # change to fetchZig's hoisting / validation / stamp-write behaviour
+  # flows through for free. Src is narrowed to scripts/build/ only so
+  # changes to other bun sources (src/**, packages/**) don't invalidate
+  # this derivation's hash.
+  zigExtracted =
+    let
+      zigZip = fetchurl {
+        url = "https://github.com/oven-sh/zig/releases/download/autobuild-${zigCommit}/bootstrap-x86_64-linux-musl.zip";
+        hash = "sha256-Baetu5WBFqAUx/qtvfsemQpc6JQRJKkcVI9F0r8NDTg=";
+      };
+    in
+    stdenv.mkDerivation {
+      name = "bun-zig-${zigCommit}";
+      src = builtins.path {
+        name = "bun-scripts-build";
+        path = "${self}/scripts/build";
+        recursive = true;
+      };
+      nativeBuildInputs = [
+        bun
+        unzip
+      ];
+      dontConfigure = true;
+      dontBuild = true;
+      dontFixup = true;
+      # src unpacks to $PWD and contains only scripts/build/'s contents,
+      # so the script lives at ./fetch-cli.ts.
+      installPhase = ''
+        runHook preInstall
+        export HOME=$TMPDIR
+        bun ./fetch-cli.ts zig "file://${zigZip}" $out "${zigCommit}"
+        runHook postInstall
+      '';
+    };
 
   nodeHeaders = fetchurl {
     url = "https://nodejs.org/dist/v${nodeVer}/node-v${nodeVer}-headers.tar.gz";
@@ -224,7 +264,7 @@ stdenv.mkDerivation {
     inherit
       depTarballs
       webkitSrc
-      zigZip
+      zigExtracted
       nodeHeaders
       bunInstallCache
       lolhtmlCargoVendor
@@ -243,30 +283,56 @@ stdenv.mkDerivation {
 
   dontUseCmakeConfigure = true;
 
+  # Derivation-level env vars. stdenv exports these before any phase runs,
+  # which keeps the configurePhase body focused on side-effectful work
+  # (fetch cache staging, symlinks) rather than shell-export plumbing.
+  # Only dynamic paths that need $PWD interpolation stay in shell.
+  #
+  # BUN_INSTALL_CACHE_DIR: points bun install at the cache FOD (reads
+  #   extracted packages from /nix/store, no network).
+  # BUN_WEBKIT_PATH: skip the ~10GB vendor/WebKit/ copy. Build treats it
+  #   as read-only (webkit.ts:27-29).
+  # BUN_ZIG_PATH: skip the zig_fetch ninja edge. zig.ts validates
+  #   <path>/zig and <path>/lib exist (both present in zigExtracted).
+  # GIT_SHA: `src = self` strips .git → `git rev-parse HEAD` returns
+  #   nothing → build.zig falls back to zero_sha. Feed from flake metadata.
+  # LD_LIBRARY_PATH: the post-link smoke test (`bun-profile --revision`)
+  #   runs the just-linked binary. It has empty RUNPATH + bare-soname
+  #   NEEDEDs (the release shape), so the loader needs these paths —
+  #   same situation an end user has on a non-Nix host.
+  #
+  # BUN_INSTALL and CARGO_HOME are set in configurePhase because they
+  # depend on $PWD (sourceRoot) — stdenv doesn't expand shell vars in
+  # derivation attrs.
+  BUN_INSTALL_CACHE_DIR = "${bunInstallCache}";
+  BUN_WEBKIT_PATH = "${webkitSrc}";
+  BUN_ZIG_PATH = "${zigExtracted}";
+  GIT_SHA =
+    if self ? rev then
+      self.rev
+    else if self ? dirtyRev then
+      lib.removeSuffix "-dirty" self.dirtyRev
+    else
+      "unknown";
+  LD_LIBRARY_PATH = "${stdenv.cc.cc.lib}/lib:${lib.makeLibraryPath bunBuildInputs}";
+
   configurePhase = ''
     runHook preConfigure
 
-    mkdir -p vendor
-
-    # Sandbox-friendly cache dirs. Defaults ($HOME/.cargo, $HOME/.bun) live
-    # under /homeless-shelter and are read-only. Both are read at
-    # config-resolve time (config.ts: cacheDir = $BUN_INSTALL/build-cache;
-    # tools.ts: CARGO_HOME), so set them before `bun scripts/build.ts`.
-    #
-    # BUN_INSTALL_CACHE_DIR: points bun install at the cache FOD
-    # (~20 MB of extracted packages) instead of the default
-    # $HOME/.bun/install/cache. Codegen's `bun install --frozen-lockfile`
-    # runs fresh from scratch — writes a new node_modules, reads tarball
-    # contents from our /nix/store cache, needs no network.
+    # $PWD-dependent paths (sandboxed away from $HOME/{.cargo,.bun}).
     export BUN_INSTALL="$PWD/.bun-install"
     export CARGO_HOME="$PWD/.cargo-home"
-    export BUN_INSTALL_CACHE_DIR="${bunInstallCache}"
-    mkdir -p "$BUN_INSTALL/build-cache/tarballs" "$CARGO_HOME"
+    mkdir -p vendor "$BUN_INSTALL/build-cache/tarballs" "$CARGO_HOME"
 
-    # Tarball cache: ninja's dep_fetch edge invokes fetch-cli, which reads
-    # from cache=$cacheDir/tarballs (source.ts:884) and skips the network
-    # if the tarball exists (fetch-cli.ts:160-162). Symlink in: tar -xzmf
-    # follows symlinks, so no copy is needed.
+    # Toolchain env: CC/CXX/AR/RANLIB/LD + NIX_CFLAGS_LINK -fuse-ld=lld.
+    # Matches the devShell shellHook. stdenv's setup hooks propagate
+    # bunBuildInputs into NIX_CFLAGS_COMPILE / NIX_LDFLAGS /
+    # CMAKE_PREFIX_PATH automatically — no per-dep include/lib paths here.
+    ${commonToolchainEnv}
+
+    # Tarball cache: ninja's dep_fetch edge reads from
+    # $cacheDir/tarballs (source.ts:884), skips network on cache hit
+    # (fetch-cli.ts:160-162). Symlink in: tar -xzmf follows symlinks.
     ${lib.concatStringsSep "\n" (
       lib.mapAttrsToList (
         name: d:
@@ -276,9 +342,9 @@ stdenv.mkDerivation {
 
     # Cargo: redirect crates.io to our vendored crate tree. `cargo build`
     # runs inside vendor/lolhtml/c-api (source.ts:1249), but fetch-cli's
-    # `rm -rf $dest` (fetch-cli.ts:166) wipes vendor/<dep>/ before extract
-    # — so we can't put a config there. $CARGO_HOME/config.toml takes
-    # precedence over in-project .cargo/ configs and survives vendor wipes.
+    # `rm -rf $dest` wipes vendor/<dep>/ before extract — so we can't put
+    # a config there. $CARGO_HOME/config.toml takes precedence and
+    # survives vendor wipes.
     {
       echo '[source.crates-io]'
       echo 'replace-with = "vendored-sources"'
@@ -291,51 +357,12 @@ stdenv.mkDerivation {
     mkdir -p vendor/zstd
     ln -s ${zstd.dev}/include vendor/zstd/lib
 
-    # Zig compiler (oven-sh/zig fork). fetchZig (zig.ts:557) handles
-    # extract + hoist + .zig-commit + zig.exe/zls.exe symlinks; bun's
-    # fetch() supports file:// URLs.
-    bun scripts/build/fetch-cli.ts zig \
-      "file://${zigZip}" \
-      "$PWD/vendor/zig" \
-      '${zigCommit}'
-
-    # Node.js headers: same pattern as zig, into fetchPrebuilt
-    # (download.ts:176).
+    # Node.js headers: file:// URL into fetchPrebuilt (download.ts:176).
     bun scripts/build/fetch-cli.ts prebuilt nodejs \
       "file://${nodeHeaders}" \
       "$BUN_INSTALL/build-cache/nodejs-headers-${nodeVer}" \
       '${nodeVer}' \
       include/node/openssl include/node/uv include/node/uv.h
-
-    # Toolchain + runtime env. commonToolchainEnv (CC/CXX/AR/RANLIB/LD)
-    # comes from flake.nix and matches the devShell. No per-dep include/
-    # lib paths here: stdenv's setup hooks propagate bunBuildInputs into
-    # NIX_CFLAGS_COMPILE, NIX_LDFLAGS, and CMAKE_PREFIX_PATH automatically.
-    ${commonToolchainEnv}
-
-    # LD_LIBRARY_PATH for the post-link smoke test (`bun-profile --revision`).
-    # The binary has empty RUNPATH and bare-soname NEEDEDs (the release
-    # shape), so the loader needs these paths — same as an end user on a
-    # non-Nix host without the distro packages installed.
-    export LD_LIBRARY_PATH="${stdenv.cc.cc.lib}/lib:${lib.makeLibraryPath bunBuildInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-    # WebKit: build treats vendor/WebKit/ as read-only (outputs land under
-    # build/<profile>/deps/WebKit/, webkit.ts:27-29). Point at the
-    # /nix/store path directly, no copy.
-    export BUN_WEBKIT_PATH="${webkitSrc}"
-
-    # `src = self` strips .git → `git rev-parse HEAD` fails →
-    # zero_sha baked into the binary. build.zig demands exactly 40 hex
-    # chars; "unknown" falls back to zero_sha. Feed it explicitly from
-    # flake metadata.
-    export GIT_SHA='${
-      if self ? rev then
-        self.rev
-      else if self ? dirtyRev then
-        lib.removeSuffix "-dirty" self.dirtyRev
-      else
-        "unknown"
-    }'
 
     runHook postConfigure
   '';
