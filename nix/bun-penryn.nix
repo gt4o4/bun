@@ -183,10 +183,14 @@ let
   # lezer-cpp), packages/bun-error (preact), src/node-fallbacks (node polyfills).
   # buildInputs hoisted here so we can both consume them in the derivation
   # and reference their lib dirs in LD_LIBRARY_PATH at smoke-test time.
-  # The smoke test runs *before* fixupPhase patches RPATH, so the dynamic
-  # loader needs LD_LIBRARY_PATH to find these system .so files at link-rule
-  # `--revision` time. autoPatchelfHook fixes RPATH afterward and the
-  # installed binary doesn't need LD_LIBRARY_PATH.
+  # The post-link `bun-profile --revision` smoke test runs the just-linked
+  # binary inside the sandbox. The binary has empty RUNPATH and bare-soname
+  # NEEDED entries (that's how we want the released binary), so the dynamic
+  # loader needs LD_LIBRARY_PATH pointed at these store paths to resolve
+  # libzstd/libbrotli/etc. — the same way an end user would set it on a
+  # non-Nix host that doesn't have the matching distro packages installed.
+  # The installed binary needs the same treatment from /nix/store unless
+  # invoked via `nix shell .#bun-penryn -c bun` (which sets it for you).
   # zlib-ng needs ZLIB_COMPAT=ON to ship libz.so.1 (stock zlib ABI). The
   # default nixpkgs build targets libz-ng.so.2 which -lz can't find. bun
   # already builds the vendored copy with ZLIB_COMPAT=ON, so the compat
@@ -424,8 +428,11 @@ stdenv.mkDerivation {
     export CPATH="${icu.dev}/include''${CPATH:+:$CPATH}"
     export LIBRARY_PATH="${icu.out}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
     # LD_LIBRARY_PATH for the buildPhase smoke test (`bun-profile --revision`
-    # runs before fixupPhase patches RPATH; without these paths the loader
-    # can't find the system .so files we just linked against).
+    # runs the just-linked binary inside the sandbox). The binary has empty
+    # RUNPATH and bare-soname NEEDED entries — that's the release shape we
+    # want — so the dynamic loader needs LD_LIBRARY_PATH to find the system
+    # .so files we link against. Same situation an end user has on a
+    # non-Nix host.
     # lib.makeLibraryPath joins <input>/lib for each input.
     export LD_LIBRARY_PATH="${stdenv.cc.cc.lib}/lib:${lib.makeLibraryPath bunBuildInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export BUN_WEBKIT_PATH="$PWD/vendor/WebKit"
