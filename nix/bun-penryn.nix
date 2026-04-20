@@ -15,8 +15,9 @@
   cacert,
   icu,
   # System-linked deps for the release-penryn profile (scripts/build/profiles.ts
-  # systemDeps). The build still fetches each dep's github archive for headers,
-  # but skips the static-archive build and links the .so from these inputs.
+  # systemDeps). zstd's source fetch is skipped but its headers are symlinked
+  # under vendor/zstd/lib for build.zig translate_c. The rest source their
+  # headers from the corresponding nixpkgs .dev outputs via CPATH.
   zstd,
   brotli,
   libdeflate,
@@ -24,7 +25,7 @@
   zlib-ng,
   hdrhistogram_c,
   libuv,
-  autoPatchelfHook,
+  libhwy,
 }:
 # `bun` is listed above because it's needed in the FOD's `nativeBuildInputs`
 # (cacert alone isn't a package; bun is what runs `bun install`). For the main
@@ -43,39 +44,29 @@ let
   zigCommit = "365343af4fc5a1a632e6b54aadd0b87be30edd81";
   nodeVer = "24.3.0";
 
-  # 15 vendored deps that bun's build system normally fetches into vendor/<name>/.
+  # Vendored deps that bun's build system normally fetches into vendor/<name>/.
   # `hash` is the RAW GitHub archive tarball hash (fetchurl, not fetchFromGitHub):
   # we pre-populate scripts/build/fetch-cli.ts's tarball cache and let it do
   # extract + patch + stamp with bun's own logic. Patch application flags,
   # CRLF normalization, and identity format all stay in sync with the build
   # system automatically.
+  #
+  # Deps the release-penryn profile links from the system (brotli, c-ares,
+  # hdrhistogram_c, libdeflate, libuv, zlib-ng, libhwy) don't appear here —
+  # their dep file's source() returns kind:"system" when systemDeps.has(name),
+  # which means no fetch + no build + no headers vendored (system headers
+  # come from the buildInputs' .dev outputs via CPATH).
+  #
+  # zstd is a special case: the `kind: "system"` branch links -lzstd, but
+  # build.zig:681 hardcodes `vendor/zstd/lib` as a translate_c include path
+  # for zig's @cImport. We satisfy that by symlinking the nixpkgs zstd.dev
+  # headers into vendor/zstd/lib in configurePhase below — no fetch needed.
   deps = {
     boringssl = {
       owner = "oven-sh";
       repo = "boringssl";
       rev = "0c5fce43b7ed5eb6001487ee48ac65766f5ddcd1";
       hash = "sha256-pBSx0QX+8QVpe3QowL5ff8Z0iYSeqidpMa6DRNeKmbg=";
-      patches = [ ];
-    };
-    brotli = {
-      owner = "google";
-      repo = "brotli";
-      rev = "v1.1.0";
-      hash = "sha256-5yCmyilCi4A/StFlNxdx9TmPq6OX7fZ3iDehhZnqE/8=";
-      patches = [ ];
-    };
-    cares = {
-      owner = "c-ares";
-      repo = "c-ares";
-      rev = "3ac47ee46edd8ea40370222f91613fc16c434853";
-      hash = "sha256-jJQRbLNmrkpE5IfaTZ9+c2KH0ynvpviP3wd80tCi5Lg=";
-      patches = [ ];
-    };
-    hdrhistogram = {
-      owner = "HdrHistogram";
-      repo = "HdrHistogram_c";
-      rev = "be60a9987ee48d0abf0d7b6a175bad8d6c1585d1";
-      hash = "sha256-gRxeWuUwOnWt5QaIiAr2qtXS+VHsV4X2gYa9GGNc38k=";
       patches = [ ];
     };
     highway = {
@@ -95,20 +86,6 @@ let
         "patches/libarchive/CMakeLists.txt.patch"
         "patches/libarchive/nonblocking-read.patch"
       ];
-    };
-    libdeflate = {
-      owner = "ebiggers";
-      repo = "libdeflate";
-      rev = "c8c56a20f8f621e6a966b716b31f1dedab6a41e3";
-      hash = "sha256-HlzAa9vz4SRdi4nJ41iPUH48i8U/6Lgil3Cp6GYd6oE=";
-      patches = [ ];
-    };
-    libuv = {
-      owner = "libuv";
-      repo = "libuv";
-      rev = "f3ce527ea940d926c40878ba5de219640c362811";
-      hash = "sha256-RgQNUeiqhqfITjd+Ik1CfDUCLsbj7Y7TmUk7DYV00M8=";
-      patches = [ "patches/libuv/fix-win-pipe-cancel-race.patch" ];
     };
     lolhtml = {
       owner = "cloudflare";
@@ -145,20 +122,6 @@ let
       hash = "sha256-a1BIX8u/qQqZxW6OK2qSAU3NNDd9Xtsj4ZONyeyW8Ko=";
       patches = [ "patches/tinycc/tcc.h.patch" ];
     };
-    zlib = {
-      owner = "zlib-ng";
-      repo = "zlib-ng";
-      rev = "12731092979c6d07f42da27da673a9f6c7b13586";
-      hash = "sha256-oNKl0SLIS1ank6FVOpwzJ/sut0ab96hreePHvl2S6NY=";
-      patches = [ "patches/zlib/clang-cl-arm64.patch" ];
-    };
-    zstd = {
-      owner = "facebook";
-      repo = "zstd";
-      rev = "f8745da6ff1ad1e7bab384bd1f9d742439278e99";
-      hash = "sha256-SwvR8M+yXmG5EDw18nOVUw/1tMDSUToA/XRYSehepSw=";
-      patches = [ ];
-    };
   };
 
   # Raw GitHub archive tarball per dep.
@@ -174,11 +137,13 @@ let
   # looks up: `<name>-<sha256(url)[:16]>.tar.gz`. Matches fetch-cli.ts:154-156
   # byte-for-byte — verified with `builtins.hashString "sha256"` matching
   # `printf '%s' url | sha256sum`.
-  depCacheName = name: d:
-    "${name}-${builtins.substring 0 16 (
-      builtins.hashString "sha256"
-        "https://github.com/${d.owner}/${d.repo}/archive/${d.rev}.tar.gz"
-    )}.tar.gz";
+  depCacheName =
+    name: d:
+    "${name}-${
+      builtins.substring 0 16 (
+        builtins.hashString "sha256" "https://github.com/${d.owner}/${d.repo}/archive/${d.rev}.tar.gz"
+      )
+    }.tar.gz";
 
   # lolhtml is built via `cargo build` against crates.io. The sandbox has no
   # network, so we materialize the vendored crate tree at eval time from the
@@ -243,6 +208,10 @@ let
     zlibNgCompat
     hdrhistogram_c
     libuv
+    # nixpkgs ships libhwy.a only — no .so. Linking it dynamically would need
+    # a shared-library override; we just inline the .a and skip the source
+    # fetch. Same runtime behavior as building from source, faster configure.
+    libhwy
   ];
 
   bunNodeModules = stdenv.mkDerivation {
@@ -316,12 +285,24 @@ stdenv.mkDerivation {
 
   # bunPackages (from flake.nix) carries cmake/ninja/clang/llvm/lld/rustc/cargo/
   # go/bun/nodejs/python/libtool/ruby/perl/openssl/zlib/libxml2/libiconv/git/
-  # unzip/xz/pkg-config. We add only what the Nix build needs beyond that:
-  # coreutils (explicit), autoPatchelfHook (RPATH fixup), icu (Penryn binary
-  # links system ICU 76).
+  # unzip/xz/pkg-config. We add only what the Nix build needs beyond that.
+  #
+  # autoPatchelfHook is intentionally NOT in nativeBuildInputs. Its job is
+  # to bake nix-store RUNPATHs + interpreter into the binary so it runs
+  # in-place from /nix/store. That's exactly what we DON'T want for the
+  # release artifact — we want bare NEEDED entries + /lib64 interpreter so
+  # the binary is portable to any glibc-≥2.40 distro. Skipping the hook
+  # leaves the linker's defaults (empty RUNPATH, nix-store interpreter);
+  # postInstall below swaps the interpreter to the FHS path.
+  #
+  # Trade-off: ./result/bin/bun won't run from /nix/store without
+  # LD_LIBRARY_PATH set, because libz.so.1 etc. aren't on a default search
+  # path. Use `nix shell .#bun-penryn -c bun` (which sets PATH+LD_LIBRARY_PATH
+  # via the shell wrapper) or build the in-store-runnable variant by adding
+  # autoPatchelfHook back. The released zip works on any standard distro
+  # with the runtime libs installed (see release notes).
   nativeBuildInputs = bunPackages ++ [
     coreutils
-    autoPatchelfHook
   ];
   # Each system-linked dep here is wired through scripts/build/profiles.ts
   # (release-penryn.systemDeps) and the corresponding deps/<name>.ts file.
@@ -339,7 +320,9 @@ stdenv.mkDerivation {
     # 0. Pre-installed node_modules from the FOD above. Preserves symlinks so
     #    workspace links (node_modules/bun-types -> ../packages/bun-types)
     #    resolve correctly against our packages/ directory.
-    cp -a "${bunNodeModules}/node_modules" node_modules
+    #    --reflink=auto: COW on btrfs/xfs (instant + zero extra space), plain
+    #    copy elsewhere. -a implies --no-dereference so symlinks survive.
+    cp -a --reflink=auto "${bunNodeModules}/node_modules" node_modules
     chmod -R u+w node_modules
     for wp in \
       packages/bun-types \
@@ -348,7 +331,7 @@ stdenv.mkDerivation {
       src/node-fallbacks \
     ; do
       if [ -d "${bunNodeModules}/$wp/node_modules" ]; then
-        cp -a "${bunNodeModules}/$wp/node_modules" "$wp/node_modules"
+        cp -a --reflink=auto "${bunNodeModules}/$wp/node_modules" "$wp/node_modules"
         chmod -R u+w "$wp/node_modules"
       fi
     done
@@ -372,10 +355,15 @@ stdenv.mkDerivation {
     #    cache first and skips the network download if the tarball already
     #    exists (fetch-cli.ts:160-162), then does extract+patch+stamp itself
     #    — so we don't need to run fetch-cli ourselves.
+    # Hardlink tarballs from /nix/store: free + instant + works on every fs.
+    # Safe here specifically because fetch-cli only reads the tarball — no
+    # chmod or write follows. (For trees we copy + chmod, hardlinks would
+    # corrupt the store inode; reflinks are the right tool there.)
     mkdir -p "$BUN_INSTALL/build-cache/tarballs"
     ${lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (name: d:
-        ''cp "${depTarballs.${name}}" "$BUN_INSTALL/build-cache/tarballs/${depCacheName name d}"''
+      lib.mapAttrsToList (
+        name: d:
+        ''ln -f "${depTarballs.${name}}" "$BUN_INSTALL/build-cache/tarballs/${depCacheName name d}" || cp --reflink=auto "${depTarballs.${name}}" "$BUN_INSTALL/build-cache/tarballs/${depCacheName name d}"''
       ) deps
     )}
 
@@ -393,13 +381,25 @@ stdenv.mkDerivation {
       echo 'directory = "${lolhtmlCargoVendor}"'
     } > "$CARGO_HOME/config.toml"
 
+    # 1c. zstd headers for build.zig translate_c. zstd is system-linked so we
+    #     skip its fetch — but build.zig:681 has `addIncludePath("vendor/zstd/lib")`
+    #     hardcoded, so zig's @cImport(@cInclude("zstd.h")) needs the headers
+    #     reachable at exactly that path. Symlink nixpkgs zstd.dev/include into
+    #     place; the C/C++ side doesn't need this since CPATH covers it.
+    echo "==> vendor/zstd/lib (symlink to nixpkgs zstd.dev)"
+    mkdir -p vendor/zstd/lib
+    for h in ${zstd.dev}/include/*.h; do
+      ln -sf "$h" "vendor/zstd/lib/$(basename "$h")"
+    done
+
     # 2. WebKit source. `release-penryn` forces webkit=local — bun's build
     #    system runs a nested cmake build on it (scripts/build/deps/webkit.ts
     #    lines 203-298). The profile's x64Cpu=penryn flows through
     #    computeCpuTargetFlags() into CMAKE_C_FLAGS/CMAKE_CXX_FLAGS, so the
     #    nested WebKit compile targets Penryn too.
     echo "==> vendor/WebKit"
-    cp -r --no-preserve=mode "${webkitSrc}" vendor/WebKit
+    # --reflink=auto: ~10GB WebKit checkout, big win on COW filesystems.
+    cp -r --reflink=auto --no-preserve=mode "${webkitSrc}" vendor/WebKit
     chmod -R u+w vendor/WebKit
 
     # 3. Zig compiler (oven-sh/zig fork — upstream zig won't work). Hand the
@@ -444,9 +444,12 @@ stdenv.mkDerivation {
     # fallback leads to zero_sha in the binary. That's acceptable for
     # fully-unknown state but is a red flag when we expected dirtyRev to work.
     export GIT_SHA='${
-      if self ? rev then self.rev
-      else if self ? dirtyRev then lib.removeSuffix "-dirty" self.dirtyRev
-      else "unknown"
+      if self ? rev then
+        self.rev
+      else if self ? dirtyRev then
+        lib.removeSuffix "-dirty" self.dirtyRev
+      else
+        "unknown"
     }'
     echo "[configurePhase] GIT_SHA='$GIT_SHA' (len ''${#GIT_SHA})"
 
@@ -464,6 +467,16 @@ stdenv.mkDerivation {
     install -Dm755 build/release-penryn/bun $out/bin/bun
     ln -s bun $out/bin/bunx
     runHook postInstall
+  '';
+
+  postFixup = ''
+    # Swap the linker-baked nix-store interpreter
+    # (e.g. /nix/store/.../glibc/lib/ld-linux-x86-64.so.2) for the FHS path
+    # every glibc distro has at /lib64. Combined with skipping
+    # autoPatchelfHook (so RUNPATH stays empty and NEEDED keeps bare
+    # sonames), the result is a binary you can copy to any glibc-≥2.40
+    # distro and run, no nix-isms baked in.
+    patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 $out/bin/bun
   '';
 
   meta = with lib; {

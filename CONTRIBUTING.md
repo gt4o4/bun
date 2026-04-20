@@ -294,25 +294,71 @@ Note that if you make changes to our [WebKit fork](https://github.com/oven-sh/We
 
 ## Building for pre-SSE4.2 CPUs (Penryn / SSE4.1)
 
-Bun's standard and `--baseline` builds both require SSE4.2 (Nehalem, 2008+). For older x86_64 hardware that has SSE4.1 but not SSE4.2 (Penryn-class — late Core 2 Duo, early Atoms), use the `release-penryn` profile. This is a local-only build path; no prebuilt artifact is shipped.
+Bun's standard and `--baseline` builds both require SSE4.2 (Nehalem, 2008+). For older x86_64 hardware that has SSE4.1 but not SSE4.2 (Penryn-class — late Core 2 Duo, early Atoms), use the `release-penryn` profile. This is a local-only build path; no prebuilt artifact is shipped from upstream.
 
-```bash
-# 1. Clone WebKit at the pinned commit (no Penryn prebuilt exists)
-$ git clone https://github.com/oven-sh/WebKit vendor/WebKit
-$ git -C vendor/WebKit checkout <commit_hash>   # see WEBKIT_VERSION in scripts/build/deps/webkit.ts
+There are two ways to build it: a [Nix derivation](#using-the-nix-derivation) (fully reproducible, recommended) or [the manual procedure](#manual-build).
 
-# 2. Build — sets -march=penryn for bun + all deps + the local WebKit
-$ bun run build --profile=release-penryn --build-dir=build/release-penryn
+### Using the Nix derivation
+
+```sh
+nix build github:oven-sh/bun?ref=claude/penryn-build#bun-penryn
+./result/bin/bun --version
 ```
 
-What the profile does:
+The derivation lives at [`nix/bun-penryn.nix`](/nix/bun-penryn.nix) and pins every input — bun source, WebKit, the oven-sh/zig fork, node headers, the surviving vendored deps. Network is only needed for one fixed-output derivation that runs `bun install --frozen-lockfile`. Everything else is hermetic.
 
-- Sets `-march=penryn` for bun's own C/C++, all vendored deps, and the nested WebKit cmake invocation.
-- Sets `-Dcpu=penryn` for the Zig portion of the build.
+### Manual build
+
+```sh
+# 1. Clone WebKit at the pinned commit (no Penryn prebuilt exists below nehalem)
+git clone https://github.com/oven-sh/WebKit vendor/WebKit
+git -C vendor/WebKit checkout <commit_hash>   # see WEBKIT_VERSION in scripts/build/deps/webkit.ts
+
+# 2. Build — sets -march=penryn for bun + all deps + the local WebKit
+bun run build --profile=release-penryn --build-dir=build/release-penryn
+```
+
+### What the profile does
+
+- `-march=penryn` for bun's own C/C++, all vendored deps that still build from source, and the nested WebKit cmake invocation.
+- `-Dcpu=penryn` for the Zig portion of the build.
+- `-flto=full` plus `-fwhole-program-vtables -fforce-emit-vtables` (C++ only) to match the official `oven-sh/WebKit` Dockerfile release flags. Without LTO, the nested WebKit build silently downgrades to `RelWithDebInfo` (no `-O3`).
+- `-O3 -DNDEBUG` (defines `NDEBUG`, no value).
 - Forces `--webkit=local` (asserted at configure time — no prebuilt tarballs exist below `nehalem`).
-- Enables LTO with `-fwhole-program-vtables -fforce-emit-vtables` to match the official `oven-sh/WebKit` Dockerfile release flags. Without LTO, the nested WebKit build silently downgrades to `RelWithDebInfo` (no `-O3`).
+- Lists eight deps in `systemDeps` (zstd, brotli, libdeflate, c-ares, zlib, hdrhistogram, libuv, highway). Each switches its `source()` to `kind: "system"` and `build()` to `kind: "none"`, so the profile links those from the host's package manager (or nixpkgs in the Nix path) instead of bundling them statically. The remaining vendored deps still build from source: boringssl, mimalloc, tinycc, libarchive, lol-html, ls-hpack, picohttpparser.
 
-Adding a new CLI override `--x64-cpu=penryn` works on top of any other profile too, e.g. `bun run build --profile=release-local --x64-cpu=penryn`.
+The CLI override `--x64-cpu=penryn` works on top of any other profile too, e.g. `bun run build --profile=release-local --x64-cpu=penryn`.
+
+### Runtime requirements (manual / non-Nix builds)
+
+The `release-penryn` binary dynamically links against:
+
+```
+libstdc++.so.6
+libicui18n.so.76, libicuuc.so.76, libicudata.so.76
+libz.so.1
+libzstd.so.1
+libbrotlidec.so.1, libbrotlienc.so.1, libbrotlicommon.so.1
+libdeflate.so.0
+libcares.so.2
+libhdr_histogram.so.6
+libuv.so.1
+libc.so.6   # glibc ≥ 2.40
+```
+
+ICU 76 is the major version this binary was linked against; ICU 75 won't work without symlinks.
+
+Distro install hints:
+
+```sh
+# Debian/Ubuntu
+apt install libicu76 libstdc++6 libzstd1 libbrotli1 libdeflate0 \
+            libc-ares2 libhdr-histogram-c6 libuv1
+# Arch
+pacman -S icu gcc-libs zstd brotli libdeflate c-ares libuv hdrhistogram-c
+# NixOS
+nix shell nixpkgs#{icu,zstd,brotli,libdeflate,c-ares,zlib,libuv,hdrhistogram_c,gcc-lib}
+```
 
 ### Runtime caveats
 
@@ -330,14 +376,17 @@ Plain JS, Bun APIs (`Bun.serve`, `fetch`, `Bun.sql`, etc.), and WASM modules tha
 ```sh
 # Quick check from the host (still on a modern CPU): no SSE4.2 / POPCNT
 # in static code outside runtime-dispatched zlib-ng / simdutf paths.
-$ llvm-objdump -d build/release-penryn/bun \
-    | rg -i 'pcmpestri|pcmpistri|crc32[bwdq]'
+llvm-objdump -d build/release-penryn/bun \
+    | rg -i 'pcmpestri|pcmpistri|crc32[bwdq]|pcmpgtq'
+
+# Confirm system-linked deps resolve at runtime:
+ldd build/release-penryn/bun | grep -E 'libz|libzstd|libbrotli|libicu|libhdr|libuv'
 
 # Run on emulated Penryn:
-$ qemu-x86_64 -cpu Penryn build/release-penryn/bun -e 'console.log(Bun.version)'
+qemu-x86_64 -cpu Penryn build/release-penryn/bun -e 'console.log(Bun.version)'
 
 # Pin the floor: -cpu Conroe (no SSE4.1) should SIGILL:
-$ qemu-x86_64 -cpu Conroe build/release-penryn/bun -e 'console.log(Bun.version)'
+qemu-x86_64 -cpu Conroe build/release-penryn/bun -e 'console.log(Bun.version)'
 ```
 
 ## Troubleshooting
