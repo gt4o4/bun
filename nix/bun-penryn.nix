@@ -52,10 +52,11 @@ let
   # system automatically.
   #
   # Deps the release-penryn profile links from the system (brotli, c-ares,
-  # hdrhistogram_c, libdeflate, libuv, zlib-ng, libhwy) don't appear here —
-  # their dep file's source() returns kind:"system" when systemDeps.has(name),
-  # which means no fetch + no build + no headers vendored (system headers
-  # come from the buildInputs' .dev outputs via CPATH).
+  # hdrhistogram_c, highway, libdeflate, libuv, zlib-ng) don't appear here
+  # — their dep file's source() returns kind:"system" when
+  # systemDeps.has(name), which means no fetch + no build + no headers
+  # vendored (system headers come from the buildInputs' .dev outputs via
+  # CPATH; libhwy is the static-archive case).
   #
   # zstd is a special case: the `kind: "system"` branch links -lzstd, but
   # build.zig:681 hardcodes `vendor/zstd/lib` as a translate_c include path
@@ -68,13 +69,6 @@ let
       rev = "0c5fce43b7ed5eb6001487ee48ac65766f5ddcd1";
       hash = "sha256-pBSx0QX+8QVpe3QowL5ff8Z0iYSeqidpMa6DRNeKmbg=";
       patches = [ ];
-    };
-    highway = {
-      owner = "google";
-      repo = "highway";
-      rev = "ac0d5d297b13ab1b89f48484fc7911082d76a93f";
-      hash = "sha256-p6gW9LYqBBT/DTnAqIdYR0aN1vfJrXF4GiRGmnVs3qc=";
-      patches = [ "patches/highway/silence-warnings.patch" ];
     };
     libarchive = {
       owner = "libarchive";
