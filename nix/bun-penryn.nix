@@ -161,12 +161,15 @@ let
     libhwy
   ];
 
-  # FOD for node_modules. FODs get network, so `bun install --frozen-lockfile`
-  # can reach the registry; the result is content-hashed, so a lockfile bump
-  # triggers a refetch. Three workspaces need install: repo root, bun-error,
-  # node-fallbacks.
-  bunNodeModules = stdenv.mkDerivation {
-    pname = "bun-penryn-node-modules";
+  # FOD for bun's install cache. FODs get network, so `bun install
+  # --frozen-lockfile` can hit the registry. Output is the extracted
+  # package cache (not a node_modules tree) — the main build points
+  # BUN_INSTALL_CACHE_DIR here and runs a fresh install against it.
+  # Much smaller content hash surface than a full node_modules tree:
+  # only the downloaded packages affect the hash, not workspace
+  # symlinks or install-time hoisting decisions.
+  bunInstallCache = stdenv.mkDerivation {
+    pname = "bun-penryn-install-cache";
     version = bunVersion;
     src = bunSrc;
 
@@ -182,34 +185,33 @@ let
     # inject them via patchShebangs / RPATH shrinking on prebuilt binaries.
     dontFixup = true;
 
-    # `bun install` writes to $PWD/node_modules, so install in-place then
-    # move into $out — no redundant copy. Inner workspace symlinks are
-    # relative so they survive the move.
     installPhase = ''
       runHook preInstall
       export HOME=$TMPDIR
+      export BUN_INSTALL_CACHE_DIR=$out
+      mkdir -p $out
       for dir in "" packages/bun-error src/node-fallbacks; do
         (cd "$PWD/$dir" && bun install --frozen-lockfile)
       done
-      mkdir -p $out
-      mv node_modules $out/node_modules
-      for wp in \
-        packages/bun-types \
-        packages/@types/bun \
-        packages/bun-error \
-        src/node-fallbacks \
-      ; do
-        if [ -d "$wp/node_modules" ]; then
-          mkdir -p "$out/$wp"
-          mv "$wp/node_modules" "$out/$wp/node_modules"
-        fi
+      # Bun creates absolute symlinks inside the cache
+      # (e.g. abort-controller/3.0.0@@@1 → $out/abort-controller@3.0.0@@@1).
+      # FOD outputs can't reference their own store path, so rewrite each
+      # self-pointing symlink to a relative target.
+      find $out -type l | while read -r link; do
+        target=$(readlink "$link")
+        case "$target" in
+          "$out"/*)
+            rel=$(realpath --relative-to="$(dirname "$link")" "$target")
+            ln -sfn "$rel" "$link"
+            ;;
+        esac
       done
       runHook postInstall
     '';
 
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-IrpMpPAdtf484RycSymFh4MAjlooXdh8sHX2xTqt/6Q=";
+    outputHash = "sha256-4PLfZ+YIv06fxjc02iKDdjtDX5Wmq59gZTwlD0NL+50=";
   };
 in
 stdenv.mkDerivation {
@@ -224,7 +226,7 @@ stdenv.mkDerivation {
       webkitSrc
       zigZip
       nodeHeaders
-      bunNodeModules
+      bunInstallCache
       lolhtmlCargoVendor
       ;
   };
@@ -244,27 +246,21 @@ stdenv.mkDerivation {
   configurePhase = ''
     runHook preConfigure
 
-    # node_modules. The FOD layout mirrors the bun source tree — one overlay
-    # copy drops the top-level node_modules plus per-workspace node_modules
-    # (bun-types, @types/bun, bun-error, node-fallbacks) into the right
-    # spots. `bun install --frozen-lockfile` during codegen atomically
-    # replaces workspace entries (EEXIST if already symlinked), so we need
-    # real writable dirs — rules out `ln -s` and `cp -rs`. Reflinks are
-    # instant on COW fs and a plain copy otherwise.
-    cp -a --reflink=auto "${bunNodeModules}/." .
-    # -a preserves read-only perms from /nix/store; bun install needs write.
-    # Walking packages/ and src/node-fallbacks/ is cheap and hits only the
-    # copied-in node_modules subtrees plus a few already-writable parents.
-    chmod -R u+w node_modules packages src/node-fallbacks
-
     mkdir -p vendor
 
     # Sandbox-friendly cache dirs. Defaults ($HOME/.cargo, $HOME/.bun) live
     # under /homeless-shelter and are read-only. Both are read at
     # config-resolve time (config.ts: cacheDir = $BUN_INSTALL/build-cache;
     # tools.ts: CARGO_HOME), so set them before `bun scripts/build.ts`.
+    #
+    # BUN_INSTALL_CACHE_DIR: points bun install at the cache FOD
+    # (~20 MB of extracted packages) instead of the default
+    # $HOME/.bun/install/cache. Codegen's `bun install --frozen-lockfile`
+    # runs fresh from scratch — writes a new node_modules, reads tarball
+    # contents from our /nix/store cache, needs no network.
     export BUN_INSTALL="$PWD/.bun-install"
     export CARGO_HOME="$PWD/.cargo-home"
+    export BUN_INSTALL_CACHE_DIR="${bunInstallCache}"
     mkdir -p "$BUN_INSTALL/build-cache/tarballs" "$CARGO_HOME"
 
     # Tarball cache: ninja's dep_fetch edge invokes fetch-cli, which reads
