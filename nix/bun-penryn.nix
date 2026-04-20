@@ -421,12 +421,15 @@ stdenv.mkDerivation {
       include/node/openssl include/node/uv include/node/uv.h
 
     # 5. Toolchain env. commonToolchainEnv (CC/CXX/AR/RANLIB/LD) comes from
-    #    flake.nix and matches the devShell shellHook exactly. Penryn-specific
-    #    extras (ICU paths, BUN_WEBKIT_PATH, GIT_SHA) are local.
+    #    flake.nix and matches the devShell shellHook exactly.
+    #
+    # No per-dep include/lib paths here: all system-linked libs are in
+    # `bunBuildInputs`, and stdenv's setup hooks spread them to the right
+    # places automatically — /include → NIX_CFLAGS_COMPILE (absorbed by
+    # the cc-wrapper), /lib → NIX_LDFLAGS (absorbed by the ld-wrapper),
+    # each store path → CMAKE_PREFIX_PATH (via the cmake setup hook, so
+    # find_package(ICU) inside WebKit's cmake sees them too).
     ${commonToolchainEnv}
-    export CMAKE_PREFIX_PATH="${icu.dev}:${icu.out}''${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
-    export CPATH="${icu.dev}/include''${CPATH:+:$CPATH}"
-    export LIBRARY_PATH="${icu.out}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
     # LD_LIBRARY_PATH for the buildPhase smoke test (`bun-profile --revision`
     # runs the just-linked binary inside the sandbox). The binary has empty
     # RUNPATH and bare-soname NEEDED entries — that's the release shape we
