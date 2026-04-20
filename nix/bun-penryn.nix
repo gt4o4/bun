@@ -35,6 +35,18 @@ let
   bunVersion = self.shortRev or self.dirtyShortRev or "dev";
 
   webkitRev = "4d5e75ebd84a14edbc7ae264245dcd77fe597c10";
+  # Stable zig (ZIG_COMMIT in scripts/build/zig.ts). We pin the stable
+  # compiler AND pass --zigCommit=${zigCommit} to scripts/build.ts so
+  # usingParallelCompiler(cfg) resolves to false and the build emits
+  # -Dllvm_codegen_threads=0. Two traps this avoids:
+  #   - Just pinning stable without the override: upstream's defaultZigCommit
+  #     picks ZIG_COMMIT_PARALLEL on linux non-CI, so cfg.zigCommit flips to
+  #     parallel, threaded codegen is enabled, and the stable compiler emits
+  #     a 0-byte bun.o stub → every Zig symbol undefined at link.
+  #   - Pinning parallel: threaded codegen works, but the serial ld -r merge
+  #     that combines sharded .o output is pathologically slow for this
+  #     profile (Release + -Dcpu=penryn + LTO) — 1h in, bun.o at 17MB, ~7KB/s.
+  # Keep in sync with zig.ts::ZIG_COMMIT.
   zigCommit = "365343af4fc5a1a632e6b54aadd0b87be30edd81";
   nodeVer = "24.3.0";
 
@@ -370,7 +382,7 @@ stdenv.mkDerivation {
 
   buildPhase = ''
     runHook preBuild
-    bun scripts/build.ts --profile=release-penryn --build-dir=build/release-penryn
+    bun scripts/build.ts --profile=release-penryn --build-dir=build/release-penryn --zigCommit=${zigCommit}
     runHook postBuild
   '';
 
