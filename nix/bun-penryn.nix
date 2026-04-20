@@ -27,6 +27,7 @@
   hdrhistogram_c,
   libuv,
   libhwy,
+  patchelf,
 }:
 
 let
@@ -278,7 +279,7 @@ stdenv.mkDerivation {
   # Trade-off: ./result/bin/bun won't run from /nix/store without
   # LD_LIBRARY_PATH set. Use `nix shell .#bun-penryn -c bun` or run from a
   # distro with the runtime libs installed.
-  nativeBuildInputs = bunPackages ++ [ coreutils ];
+  nativeBuildInputs = bunPackages ++ [ coreutils patchelf ];
   buildInputs = bunBuildInputs;
 
   dontUseCmakeConfigure = true;

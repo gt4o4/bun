@@ -256,9 +256,8 @@ export interface PartialConfig {
   zigCommit?: string;
   webkitVersion?: string;
   /**
-   * Dep names to link from the system. Profiles use this to opt deps into
-   * `kind: "system"` mode. CLI flag `--system-deps=zstd,brotli` is parsed
-   * by build.ts and ends up here.
+   * Dep names to link from the system. Profiles or other config sources can
+   * use this to opt deps into `kind: "system"` mode.
    */
   systemDeps?: readonly string[];
 }
@@ -594,9 +593,9 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     canaryRevision,
     zigCommit,
     webkitVersion,
-    // Defensive copy: profiles + CLI hand us a readonly array literal,
-    // freeze the resulting set so downstream can't mutate it (which would
-    // cause spooky test interactions when configure runs twice in-process).
+    // Defensive copy: profiles + CLI may hand us a readonly array literal.
+    // This creates a fresh Set for each resolved config, but the Set remains
+    // mutable to downstream consumers.
     systemDeps: new Set(partial.systemDeps ?? []),
   };
 }
