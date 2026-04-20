@@ -244,25 +244,18 @@ stdenv.mkDerivation {
   configurePhase = ''
     runHook preConfigure
 
-    # node_modules. `bun install --frozen-lockfile` atomically replaces
-    # workspace entries (node_modules/{bun-types,@types/bun,bun-tracestrings})
-    # with fresh symlinks into packages/*. That EEXIST-if-already-present
-    # behavior rules out `ln -s` (read-only target) and `cp -rs` (pre-created
-    # workspace symlinks). `cp -a --reflink=auto` is instant on COW fs and
-    # a plain copy otherwise — still a small fraction of the build.
-    cp -a --reflink=auto "${bunNodeModules}/node_modules" node_modules
-    chmod -R u+w node_modules
-    for wp in \
-      packages/bun-types \
-      packages/@types/bun \
-      packages/bun-error \
-      src/node-fallbacks \
-    ; do
-      if [ -d "${bunNodeModules}/$wp/node_modules" ]; then
-        cp -a --reflink=auto "${bunNodeModules}/$wp/node_modules" "$wp/node_modules"
-        chmod -R u+w "$wp/node_modules"
-      fi
-    done
+    # node_modules. The FOD layout mirrors the bun source tree — one overlay
+    # copy drops the top-level node_modules plus per-workspace node_modules
+    # (bun-types, @types/bun, bun-error, node-fallbacks) into the right
+    # spots. `bun install --frozen-lockfile` during codegen atomically
+    # replaces workspace entries (EEXIST if already symlinked), so we need
+    # real writable dirs — rules out `ln -s` and `cp -rs`. Reflinks are
+    # instant on COW fs and a plain copy otherwise.
+    cp -a --reflink=auto "${bunNodeModules}/." .
+    # -a preserves read-only perms from /nix/store; bun install needs write.
+    # Walking packages/ and src/node-fallbacks/ is cheap and hits only the
+    # copied-in node_modules subtrees plus a few already-writable parents.
+    chmod -R u+w node_modules packages src/node-fallbacks
 
     mkdir -p vendor
 
