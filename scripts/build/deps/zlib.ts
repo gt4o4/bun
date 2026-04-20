@@ -126,11 +126,19 @@ export const zlib: Dependency = {
   name: "zlib",
   versionMacro: "ZLIB_HASH",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "zlib-ng/zlib-ng",
-    commit: ZLIB_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("zlib")) {
+      // <zlib.h> resolves from the toolchain default include path. The Nix
+      // derivation passes `zlib-ng.override { withZlibCompat = true; }` so
+      // the .so name matches the libz.so.1 soname `-lz` expects.
+      return { kind: "system", commit: ZLIB_COMMIT, linkFlags: ["-lz"], trackLibs: ["z"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "zlib-ng/zlib-ng",
+      commit: ZLIB_COMMIT,
+    };
+  },
 
   // The clang-cl windows-arm64 patch isn't relevant on linux — keep it in
   // the array unconditionally so identity hashing stays stable across modes,

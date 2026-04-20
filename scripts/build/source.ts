@@ -189,6 +189,14 @@ export type Source =
        * lives somewhere weird.
        */
       extraIncludes?: string[];
+      /**
+       * Identifier for `bun_dependency_versions.h` (process.versions.<dep>).
+       * For system-linked deps we keep reporting the upstream commit/version
+       * the dep would have been built at — that's still the API contract
+       * surface bun was tested against. Optional: undefined → omitted from
+       * the generated header (consumers `#ifdef`).
+       */
+      commit?: string;
     };
 
 /**

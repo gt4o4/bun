@@ -17,15 +17,27 @@ const HIGHWAY_COMMIT = "2607d3b5b0113992fe84d3848859eae13b3b52c1";
 export const highway: Dependency = {
   name: "highway",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "google/highway",
-    commit: HIGHWAY_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("highway")) {
+      // nixpkgs ships libhwy.a only (no .so build); resolveSystemLib falls
+      // through to the .a probe. Same template-instantiation cost in bun's
+      // own TUs, but skips the github fetch + nested cmake build entirely
+      // (~50 MB source + 2-3 min cmake). Headers <hwy/highway.h> resolve
+      // from nixpkgs libhwy.outPath/include via the toolchain's CPATH.
+      return { kind: "system", commit: HIGHWAY_COMMIT, linkFlags: ["-lhwy"], trackLibs: ["hwy"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "google/highway",
+      commit: HIGHWAY_COMMIT,
+    };
+  },
 
   patches: ["patches/highway/silence-warnings.patch"],
 
   build: cfg => {
+    if (cfg.systemDeps.has("highway")) return { kind: "none" };
+
     const spec: DirectBuild = {
       kind: "direct",
       lang: "cxx",
@@ -58,10 +70,15 @@ export const highway: Dependency = {
     return spec;
   },
 
-  provides: () => ({
-    libs: [],
-    // Highway's public header is <hwy/highway.h> but it includes siblings
-    // via "" paths — need both the root and the hwy/ subdir in -I.
-    includes: [".", "hwy"],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("highway")) {
+      return { libs: [], includes: [] };
+    }
+    return {
+      libs: [],
+      // Highway's public header is <hwy/highway.h> but it includes siblings
+      // via "" paths — need both the root and the hwy/ subdir in -I.
+      includes: [".", "hwy"],
+    };
+  },
 };

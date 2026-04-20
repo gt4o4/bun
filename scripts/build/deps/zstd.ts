@@ -42,13 +42,24 @@ export const zstd: Dependency = {
   name: "zstd",
   versionMacro: "ZSTD_HASH",
 
-  // Always fetch — build.zig translate_c needs the headers either way.
-  source: () => ({
-    kind: "github-archive",
-    repo: "facebook/zstd",
-    commit: ZSTD_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("zstd")) {
+      // build.zig:681 hardcodes `vendor/zstd/lib` as a translate_c include
+      // path. When the dep is system-linked we skip the fetch entirely, so
+      // the caller (nix derivation) is responsible for placing a symlink
+      // at that path pointing at the system headers — see
+      // nix/bun-penryn.nix. On non-Nix system builds, point CPATH /
+      // manually link vendor/zstd/lib yourself before invoking build.
+      return { kind: "system", commit: ZSTD_COMMIT, linkFlags: ["-lzstd"], trackLibs: ["zstd"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "facebook/zstd",
+      commit: ZSTD_COMMIT,
+    };
+  },
 
+  // Always fetch — build.zig translate_c needs the headers either way.
   build: cfg => {
     if (cfg.systemDeps.has("zstd")) {
       return { kind: "none" };
@@ -93,11 +104,8 @@ export const zstd: Dependency = {
   provides: cfg => {
     if (cfg.systemDeps.has("zstd")) {
       return {
-        // No static archive (build was skipped).
         libs: [],
-        // Headers still come from the fetched source so build.zig + bun's
-        // C++ sides both see the version we pinned.
-        includes: ["lib"],
+        includes: [],
         linkFlags: ["-lzstd"],
         trackLibs: ["zstd"],
       };
