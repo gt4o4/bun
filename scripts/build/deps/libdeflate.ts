@@ -11,11 +11,17 @@ export const libdeflate: Dependency = {
   name: "libdeflate",
   versionMacro: "LIBDEFLATE_HASH",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "ebiggers/libdeflate",
-    commit: LIBDEFLATE_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("libdeflate")) {
+      // <libdeflate.h> resolves from the toolchain default include path.
+      return { kind: "system", commit: LIBDEFLATE_COMMIT, linkFlags: ["-ldeflate"], trackLibs: ["deflate"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "ebiggers/libdeflate",
+      commit: LIBDEFLATE_COMMIT,
+    };
+  },
 
   build: cfg => {
     if (cfg.systemDeps.has("libdeflate")) {
@@ -37,13 +43,7 @@ export const libdeflate: Dependency = {
   // OUTPUT_NAME on win32 (avoids the windows convention of prefixing "lib").
   provides: cfg => {
     if (cfg.systemDeps.has("libdeflate")) {
-      return {
-        libs: [],
-        // libdeflate.h sits at the source root.
-        includes: ["."],
-        linkFlags: ["-ldeflate"],
-        trackLibs: ["deflate"],
-      };
+      return { libs: [], includes: [] };
     }
     return {
       libs: [cfg.windows ? "deflatestatic" : "deflate"],

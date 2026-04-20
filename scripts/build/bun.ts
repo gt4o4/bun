@@ -198,6 +198,12 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   // zstd source must be FETCHED (not built) before zig runs — build.zig
   // @cImports zstd headers. The fetch stamp is the order-only dep.
   //
+  // System-mode zstd has no fetch rule. The caller is responsible for
+  // putting zstd headers under vendor/zstd/lib (build.zig:681 hardcodes
+  // that path) — typically a symlink to the system's zstd headers — and
+  // doing it before ninja starts. With nothing to depend on, omit the
+  // order-only entry: the headers are present at the moment zig runs.
+  //
   // Filter codegen-into-src .zig files from the glob result — they're
   // OUTPUTS of steps above, not inputs to zig build. Leaving them in
   // would create a cycle (or a fresh-build error: file doesn't exist yet).
@@ -211,7 +217,7 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
       codegenInputs: codegen.zigInputs,
       codegenOrderOnly: codegen.zigOrderOnly,
       zigSources,
-      zstdStamp: depSourceStamp(cfg, "zstd"),
+      zstdStamp: cfg.systemDeps.has("zstd") ? undefined : depSourceStamp(cfg, "zstd"),
     };
     zigObjects = emitZig(n, cfg, zigInputs);
     // `zig build check[-*]` targets share the same inputs as the obj
@@ -489,7 +495,8 @@ function emitZigOnly(n: Ninja, cfg: Config, sources: Sources): BunOutput {
     codegenInputs: codegen.zigInputs,
     codegenOrderOnly: codegen.zigOrderOnly,
     zigSources,
-    zstdStamp: depSourceStamp(cfg, "zstd"),
+    // System-mode zstd has no fetch stamp; caller pre-stages headers.
+    zstdStamp: cfg.systemDeps.has("zstd") ? undefined : depSourceStamp(cfg, "zstd"),
   });
 
   n.phony("bun", zigObjects);

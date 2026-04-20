@@ -12,15 +12,24 @@ const BROTLI_COMMIT = "v1.1.0";
 export const brotli: Dependency = {
   name: "brotli",
 
-  // Always fetch — bun's C++ side reads <brotli/encode.h> / <brotli/decode.h>
-  // from the bundled `c/include`. Even in `cfg.systemDeps.has("brotli")` mode
-  // we keep the source so the included header set matches the version we
-  // pinned, decoupling from whatever brotli nixpkgs happens to ship.
-  source: () => ({
-    kind: "github-archive",
-    repo: "google/brotli",
-    commit: BROTLI_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("brotli")) {
+      // <brotli/{encode,decode}.h> resolve from the toolchain's default
+      // include path (CPATH on Nix from buildInputs, /usr/include
+      // elsewhere). nixpkgs brotli ships v1.1.0 — same as our pin.
+      return {
+        kind: "system",
+        commit: BROTLI_COMMIT,
+        linkFlags: ["-lbrotlidec", "-lbrotlienc", "-lbrotlicommon"],
+        trackLibs: ["brotlidec", "brotlienc", "brotlicommon"],
+      };
+    }
+    return {
+      kind: "github-archive",
+      repo: "google/brotli",
+      commit: BROTLI_COMMIT,
+    };
+  },
 
   build: cfg => {
     if (cfg.systemDeps.has("brotli")) {
@@ -50,13 +59,9 @@ export const brotli: Dependency = {
 
   provides: cfg => {
     if (cfg.systemDeps.has("brotli")) {
-      return {
-        libs: [],
-        includes: ["c/include"],
-        // Link order: dec/enc both reference common, common LAST.
-        linkFlags: ["-lbrotlidec", "-lbrotlienc", "-lbrotlicommon"],
-        trackLibs: ["brotlidec", "brotlienc", "brotlicommon"],
-      };
+      // Link flags + tracking are already declared on the system Source;
+      // nothing extra to provide here.
+      return { libs: [], includes: [] };
     }
     return {
       // Order matters for static linking: common must come LAST on the link

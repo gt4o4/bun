@@ -103,12 +103,15 @@ export const profiles = {
     // (bun's event loop is custom kqueue/epoll direct). The C API is stable
     // across bun's pinned commit → nixpkgs 1.52.0 (~45 commits), so the
     // drift is low-risk on this target; revisit if addon users regress.
-    // hdrhistogram nixpkgs version matches bun's pin exactly.
+    // hdrhistogram_c and libhwy match bun's pin exactly in nixpkgs.
     //
-    // Skipped: boringssl/mimalloc/tinycc (forks), libarchive/lolhtml/lshpack
-    // (load-bearing patches), highway (nixpkgs ships static-only, no RSS
-    // dedup benefit).
-    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv"],
+    // libhwy nixpkgs ships .a only — no RSS dedup at runtime, but skips
+    // a ~50 MB source fetch and a ~3 min nested cmake.
+    //
+    // Skipped: boringssl/mimalloc/tinycc (oven-sh forks), libarchive/
+    // lolhtml/lshpack (load-bearing patches), picohttpparser (single-source
+    // direct compile, nothing to swap).
+    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv", "highway"],
   },
 
   /**

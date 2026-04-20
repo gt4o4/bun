@@ -30,6 +30,10 @@ function sourceIdentifier(source: Source): string | undefined {
       return source.commit;
     case "prebuilt":
       return source.identity;
+    case "system":
+      // Optional — system-linked deps still report the upstream commit they
+      // were tested against, when the dep's source() supplies one.
+      return source.commit;
     case "local":
     case "in-tree":
       // User-managed / in-tree — no pinned identifier independent of the

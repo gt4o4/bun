@@ -309,8 +309,12 @@ export interface ZigBuildInputs {
    * vendor/zstd/lib/ directly — doesn't need zstd BUILT, just FETCHED.
    * Order-only because the headers don't change often and zig's own
    * translate-c caching handles the inner dependency.
+   *
+   * Undefined when zstd is system-linked (no fetch rule exists). The
+   * caller is responsible for ensuring vendor/zstd/lib has the headers
+   * before ninja runs.
    */
-  zstdStamp: string;
+  zstdStamp: string | undefined;
 }
 
 /**
@@ -484,8 +488,9 @@ function zigBuildImplicitInputs(cfg: Config, inputs: ZigBuildInputs): string[] {
 function zigBuildOrderOnlyInputs(inputs: ZigBuildInputs): string[] {
   return [
     // zstd headers — must exist for @cImport, but content is tracked by
-    // zig's translate-c cache, not ninja.
-    inputs.zstdStamp,
+    // zig's translate-c cache, not ninja. System-mode zstd has no fetch
+    // stamp; in that case the caller pre-staged headers before ninja ran.
+    ...(inputs.zstdStamp !== undefined ? [inputs.zstdStamp] : []),
     // Debug-mode bake runtime — must exist at runtime-load path, but
     // zig doesn't track content (not embedded).
     ...inputs.codegenOrderOnly,
