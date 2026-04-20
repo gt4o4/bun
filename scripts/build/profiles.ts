@@ -92,12 +92,13 @@ export const profiles = {
     // Link unpatched, ABI-stable deps from the system instead of statically
     // bundling them. Penryn-class boxes are typically running multiple bun
     // workers; shared-library .text pages dedup across processes for an
-    // RSS win that the static-only build doesn't get. See
-    // scripts/build/source.ts Provides.linkFlags wiring.
+    // RSS win that the static-only build doesn't get.
     //
-    // Each dep still fetches its github tarball (translate_c reads zstd.h
-    // out of vendor/zstd/lib, and the C++ side prefers the bundled headers
-    // for ABI consistency) — only the static-archive build is skipped.
+    // In `systemDeps` mode these deps resolve via `source(): kind: "system"`,
+    // so their bundled github tarballs are not fetched. If we ever need the
+    // old "use bundled headers but link system libs" behavior again, that
+    // would need the `Provides.linkFlags` path in scripts/build/source.ts
+    // instead of `source(): kind: "system"`.
     //
     // libuv on Linux is only referenced for node-api addon symbol resolution
     // (bun's event loop is custom kqueue/epoll direct). The C API is stable

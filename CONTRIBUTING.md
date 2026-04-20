@@ -301,7 +301,7 @@ There are two ways to build it: a [Nix derivation](#using-the-nix-derivation) (f
 ### Using the Nix derivation
 
 ```sh
-nix build github:oven-sh/bun?ref=claude/penryn-build#bun-penryn
+nix build github:oven-sh/bun?ref=main#bun-penryn
 ./result/bin/bun --version
 ```
 
@@ -327,7 +327,7 @@ bun run build --profile=release-penryn --build-dir=build/release-penryn
 - Forces `--webkit=local` (asserted at configure time — no prebuilt tarballs exist below `nehalem`).
 - Lists eight deps in `systemDeps` (zstd, brotli, libdeflate, c-ares, zlib, hdrhistogram, libuv, highway). Each switches its `source()` to `kind: "system"` and `build()` to `kind: "none"`, so the profile links those from the host's package manager (or nixpkgs in the Nix path) instead of bundling them statically. The remaining vendored deps still build from source: boringssl, mimalloc, tinycc, libarchive, lol-html, ls-hpack, picohttpparser.
 
-The CLI override `--x64-cpu=penryn` works on top of any other profile too, e.g. `bun run build --profile=release-local --x64-cpu=penryn`.
+Use the `release-penryn` profile when you need a Penryn-targeted build. Do not rely on a standalone `--x64-cpu=penryn` CLI override unless support for that flag is added to the build script.
 
 ### Runtime requirements (manual / non-Nix builds)
 
