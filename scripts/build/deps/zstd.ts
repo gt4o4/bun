@@ -9,12 +9,14 @@
  * Huffman kernel ships as a .S file that clang assembles directly; on other
  * targets ZSTD_DISABLE_ASM falls through to the C implementation.
  *
- * In `cfg.systemDeps.has("zstd")` mode (Penryn profile) we still fetch the
- * source — build.zig::translate_c hardcodes `vendor/zstd/lib` as an include
- * path so it can @cImport zstd.h. Skipping the fetch would break the zig
- * side. We just skip the static-archive build and link `-lzstd` (the system
- * shared lib, ~600 KB) instead, so multiple bun processes share the .text
- * pages.
+ * In `cfg.systemDeps.has("zstd")` mode (Penryn profile), `source()` returns
+ * `kind: "system"` and skips fetching the source archive. We still link
+ * `-lzstd` (the system shared lib, ~600 KB), so multiple bun processes share
+ * the .text pages.
+ *
+ * build.zig::translate_c hardcodes `vendor/zstd/lib` as an include path so it
+ * can @cImport zstd.h, so the caller must pre-stage or symlink the system
+ * headers there before invoking the build.
  */
 
 import type { Dependency, DirectBuild } from "../source.ts";
