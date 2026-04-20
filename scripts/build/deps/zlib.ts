@@ -31,11 +31,19 @@ export const zlib: Dependency = {
   name: "zlib",
   versionMacro: "ZLIB_HASH",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "zlib-ng/zlib-ng",
-    commit: ZLIB_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("zlib")) {
+      // <zlib.h> resolves from the toolchain default include path. The Nix
+      // derivation passes `zlib-ng.override { withZlibCompat = true; }` so
+      // the .so name matches the libz.so.1 soname `-lz` expects.
+      return { kind: "system", commit: ZLIB_COMMIT, linkFlags: ["-lz"], trackLibs: ["z"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "zlib-ng/zlib-ng",
+      commit: ZLIB_COMMIT,
+    };
+  },
 
   // The clang-cl windows-arm64 patch isn't relevant on linux — keep it in
   // the array unconditionally so identity hashing stays stable across modes,
@@ -76,16 +84,7 @@ export const zlib: Dependency = {
 
   provides: cfg => {
     if (cfg.systemDeps.has("zlib")) {
-      return {
-        libs: [],
-        // No -I: <zlib.h> resolves through the toolchain's default include
-        // path (CPATH from buildInputs). The system zlib.h is
-        // binary-compatible with our zlib-compat build for the symbols bun
-        // uses.
-        includes: [],
-        linkFlags: ["-lz"],
-        trackLibs: ["z"],
-      };
+      return { libs: [], includes: [] };
     }
     // zlib-ng OUTPUT_NAME on unix → "z"; on MSVC → "zlibstatic" with
     // CMAKE_DEBUG_POSTFIX "d" (set inside if(MSVC), which clang-cl satisfies).

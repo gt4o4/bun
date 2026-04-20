@@ -18,53 +18,50 @@ export const zstd: Dependency = {
   name: "zstd",
   versionMacro: "ZSTD_HASH",
 
-  // Always fetch — build.zig translate_c needs the headers either way.
-  source: () => ({
-    kind: "github-archive",
-    repo: "facebook/zstd",
-    commit: ZSTD_COMMIT,
-  }),
-
-  build: cfg => {
+  source: cfg => {
     if (cfg.systemDeps.has("zstd")) {
-      return { kind: "none" };
+      // build.zig:681 hardcodes `vendor/zstd/lib` as a translate_c include
+      // path. When the dep is system-linked we skip the fetch entirely, so
+      // the caller (nix derivation) is responsible for placing a symlink
+      // at that path pointing at the system headers — see
+      // nix/bun-penryn.nix. On non-Nix system builds, point CPATH /
+      // manually link vendor/zstd/lib yourself before invoking build.
+      return { kind: "system", commit: ZSTD_COMMIT, linkFlags: ["-lzstd"], trackLibs: ["zstd"] };
     }
     return {
-      kind: "nested-cmake",
-      targets: ["libzstd_static"],
-      // zstd's repo root has a Makefile; the cmake build files live under
-      // build/cmake/. (They support meson too — build/meson/ — but we stick
-      // with cmake for consistency.)
-      sourceSubdir: "build/cmake",
-      args: {
-        ZSTD_BUILD_STATIC: "ON",
-        ZSTD_BUILD_PROGRAMS: "OFF",
-        ZSTD_BUILD_TESTS: "OFF",
-        ZSTD_BUILD_CONTRIB: "OFF",
-      },
-      libSubdir: "lib",
+      kind: "github-archive",
+      repo: "facebook/zstd",
+      commit: ZSTD_COMMIT,
     };
   },
 
-  provides: cfg => {
-    if (cfg.systemDeps.has("zstd")) {
-      return {
-        // No static archive (build was skipped).
-        libs: [],
-        // Headers still come from the fetched source so build.zig + bun's
-        // C++ sides both see the version we pinned. nixpkgs's zstd headers
-        // would also work in principle but matching commits removes a class
-        // of "system zstd is older than what bun expects" surprises.
-        includes: ["lib"],
-        linkFlags: ["-lzstd"],
-        trackLibs: ["zstd"],
-      };
-    }
-    return {
-      // Windows: cmake appends "_static" to distinguish from the DLL import lib.
-      libs: [cfg.windows ? "zstd_static" : "zstd"],
-      // Headers are in the SOURCE repo at lib/ (zstd.h, zdict.h).
-      includes: ["lib"],
-    };
-  },
+  build: cfg =>
+    cfg.systemDeps.has("zstd")
+      ? { kind: "none" }
+      : {
+          kind: "nested-cmake",
+          targets: ["libzstd_static"],
+          // zstd's repo root has a Makefile; the cmake build files live under
+          // build/cmake/. (They support meson too — build/meson/ — but we stick
+          // with cmake for consistency.)
+          sourceSubdir: "build/cmake",
+          args: {
+            ZSTD_BUILD_STATIC: "ON",
+            ZSTD_BUILD_PROGRAMS: "OFF",
+            ZSTD_BUILD_TESTS: "OFF",
+            ZSTD_BUILD_CONTRIB: "OFF",
+          },
+          libSubdir: "lib",
+        },
+
+  provides: cfg =>
+    cfg.systemDeps.has("zstd")
+      ? { libs: [], includes: [] }
+      : {
+          // Windows: cmake appends "_static" to distinguish from the DLL
+          // import lib.
+          libs: [cfg.windows ? "zstd_static" : "zstd"],
+          // Headers are in the SOURCE repo at lib/ (zstd.h, zdict.h).
+          includes: ["lib"],
+        },
 };

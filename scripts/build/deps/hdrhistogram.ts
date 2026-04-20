@@ -12,9 +12,10 @@ export const hdrhistogram: Dependency = {
 
   source: cfg => {
     if (cfg.systemDeps.has("hdrhistogram")) {
-      // nixpkgs-unstable ships hdrhistogram_c 0.11.9 from THIS exact commit
-      // (tarball hash matches). No drift. .so is libhdr_histogram.so.6.
-      return { kind: "system", linkFlags: ["-lhdr_histogram"], trackLibs: ["hdr_histogram"] };
+      // nixpkgs ships hdrhistogram_c 0.11.9 from THIS exact commit (tarball
+      // hash matches). <hdr/hdr_histogram.h> resolves from the toolchain
+      // default include path; .so is libhdr_histogram.so.6.
+      return { kind: "system", commit: HDRHISTOGRAM_COMMIT, linkFlags: ["-lhdr_histogram"], trackLibs: ["hdr_histogram"] };
     }
     return {
       kind: "github-archive",

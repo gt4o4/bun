@@ -11,11 +11,19 @@ export const cares: Dependency = {
   name: "cares",
   versionMacro: "C_ARES",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "c-ares/c-ares",
-    commit: CARES_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("cares")) {
+      // c-ares headers (<ares.h>) resolve from the toolchain default include
+      // path. nixpkgs ships c-ares as the `c-ares` attribute (with a dash);
+      // the .so soname is libcares.so.2 → -lcares.
+      return { kind: "system", commit: CARES_COMMIT, linkFlags: ["-lcares"], trackLibs: ["cares"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "c-ares/c-ares",
+      commit: CARES_COMMIT,
+    };
+  },
 
   build: cfg => {
     if (cfg.systemDeps.has("cares")) {
@@ -45,14 +53,7 @@ export const cares: Dependency = {
 
   provides: cfg => {
     if (cfg.systemDeps.has("cares")) {
-      return {
-        libs: [],
-        includes: ["include"],
-        // -lcares matches the soname (libcares.so.2) regardless of nixpkgs
-        // attribute name (which is c-ares with a dash).
-        linkFlags: ["-lcares"],
-        trackLibs: ["cares"],
-      };
+      return { libs: [], includes: [] };
     }
     return {
       libs: ["cares"],

@@ -18,12 +18,13 @@ export const libuv: Dependency = {
 
   source: cfg => {
     if (cfg.systemDeps.has("libuv")) {
-      // nixpkgs-unstable ships libuv 1.52.0; bun's pin f3ce527e is ~45
-      // commits behind 1.52.0 but in its ancestry. On Linux bun only links
-      // libuv so node-api addons can resolve symbols against it; the C API
-      // is stable across these commits, so the drift is low-risk on this
-      // target. Revisit if behavioral regressions show up in addon users.
-      return { kind: "system", linkFlags: ["-luv"], trackLibs: ["uv"] };
+      // nixpkgs ships libuv 1.52.0; bun's pin f3ce527e is ~45 commits ahead
+      // of 1.51.0 and behind 1.52.0 in its ancestry. On Linux bun only
+      // links libuv so node-api addons can resolve symbols against it; the
+      // C API is stable across these commits, so the drift is low-risk on
+      // this target. Revisit if behavioral regressions show up in addon
+      // users. <uv.h> resolves from the toolchain default include path.
+      return { kind: "system", commit: LIBUV_COMMIT, linkFlags: ["-luv"], trackLibs: ["uv"] };
     }
     return {
       kind: "github-archive",
