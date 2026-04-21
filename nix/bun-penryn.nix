@@ -202,6 +202,8 @@ stdenv.mkDerivation (finalAttrs: {
 
   # No autoPatchelfHook — binary stays portable (bare NEEDEDs + /lib64
   # interpreter). Needs LD_LIBRARY_PATH to run from the store.
+  # glibc floor is 2.35 (Ubuntu 22.04+) via the 22.11 stdenv passed in
+  # from flake.nix; runtime NEEDED sonames are satisfied by any glibc ≥2.35.
   nativeBuildInputs = bunPackages ++ [
     coreutils
     patchelf
@@ -212,7 +214,7 @@ stdenv.mkDerivation (finalAttrs: {
     brotli
     libdeflate
     c-ares
-    (zlib-ng.override { withZlibCompat = true; }) # libz.so.1 soname for -lz
+    zlib-ng # flake.nix passes this with withZlibCompat=true (libz.so.1 soname)
     hdrhistogram_c
     libuv
     libhwy # .a-only in nixpkgs; statically linked
@@ -231,7 +233,9 @@ stdenv.mkDerivation (finalAttrs: {
       lib.removeSuffix "-dirty" self.dirtyRev
     else
       "unknown";
-  LD_LIBRARY_PATH = "${stdenv.cc.cc.lib}/lib:${lib.makeLibraryPath finalAttrs.buildInputs}";
+  # Only buildInputs. No libstdc++ here: the baseline/penryn profile skips
+  # the post-link smoke test, so bun-profile never runs inside the sandbox.
+  LD_LIBRARY_PATH = lib.makeLibraryPath finalAttrs.buildInputs;
 
   configurePhase = ''
     runHook preConfigure
