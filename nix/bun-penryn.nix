@@ -11,7 +11,6 @@
   rustPlatform,
   coreutils,
   cacert,
-  unzip,
   # Dynamic-linked system deps for release-penryn.
   icu,
   zstd,
@@ -30,8 +29,8 @@ let
   bunVersion = self.shortRev or self.dirtyShortRev or "dev";
 
   webkitRev = "4d5e75ebd84a14edbc7ae264245dcd77fe597c10";
-  # Stable zig — must match --zigCommit= passed to build.ts so the build
-  # uses serial codegen (parallel zig + penryn LTO is pathologically slow).
+  # Stable zig. Must match scripts/build/zig.ts::ZIG_COMMIT — parallel zig
+  # + penryn LTO is pathologically slow, so we stay on serial codegen.
   zigCommit = "365343af4fc5a1a632e6b54aadd0b87be30edd81";
   nodeVer = "24.3.0";
 
@@ -131,36 +130,10 @@ let
     leaveDotGit = false;
   };
 
-  # oven-sh/zig fork prebuilt (not pkgs.zig). Extracted via fetch-cli.ts.
-  # src narrowed to scripts/build/ to avoid hash busting on unrelated changes.
-  zigExtracted =
-    let
-      zigZip = fetchurl {
-        url = "https://github.com/oven-sh/zig/releases/download/autobuild-${zigCommit}/bootstrap-x86_64-linux-musl.zip";
-        hash = "sha256-Baetu5WBFqAUx/qtvfsemQpc6JQRJKkcVI9F0r8NDTg=";
-      };
-    in
-    stdenv.mkDerivation {
-      name = "bun-zig-${zigCommit}";
-      src = builtins.path {
-        name = "bun-scripts-build";
-        path = "${self}/scripts/build";
-        recursive = true;
-      };
-      nativeBuildInputs = [
-        bun
-        unzip
-      ];
-      dontConfigure = true;
-      dontBuild = true;
-      dontFixup = true;
-      installPhase = ''
-        runHook preInstall
-        export HOME=$TMPDIR
-        bun ./fetch-cli.ts zig "file://${zigZip}" $out "${zigCommit}"
-        runHook postInstall
-      '';
-    };
+  zigZip = fetchurl {
+    url = "https://github.com/oven-sh/zig/releases/download/autobuild-${zigCommit}/bootstrap-x86_64-linux-musl.zip";
+    hash = "sha256-Baetu5WBFqAUx/qtvfsemQpc6JQRJKkcVI9F0r8NDTg=";
+  };
 
   nodeHeaders = fetchurl {
     url = "https://nodejs.org/dist/v${nodeVer}/node-v${nodeVer}-headers.tar.gz";
@@ -220,7 +193,7 @@ stdenv.mkDerivation (finalAttrs: {
     inherit
       depTarballs
       webkitSrc
-      zigExtracted
+      zigZip
       nodeHeaders
       bunInstallCache
       lolhtmlCargoVendor
@@ -251,7 +224,6 @@ stdenv.mkDerivation (finalAttrs: {
   # LD_LIBRARY_PATH: post-link smoke test runs the bare-NEEDED binary.
   BUN_INSTALL_CACHE_DIR = "${bunInstallCache}";
   BUN_WEBKIT_PATH = "${webkitSrc}";
-  BUN_ZIG_PATH = "${zigExtracted}";
   GIT_SHA =
     if self ? rev then
       self.rev
@@ -293,6 +265,14 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p vendor/zstd
     ln -s ${zstd.dev}/include vendor/zstd/lib
 
+    # Zig compiler (oven-sh/zig fork). fetchZig (zig.ts:557) handles
+    # extract + hoist + .zig-commit + zig.exe/zls.exe symlinks; bun's
+    # fetch() supports file:// URLs.
+    bun scripts/build/fetch-cli.ts zig \
+      "file://${zigZip}" \
+      "$PWD/vendor/zig" \
+      '${zigCommit}'
+
     bun scripts/build/fetch-cli.ts prebuilt nodejs \
       "file://${nodeHeaders}" \
       "$BUN_INSTALL/build-cache/nodejs-headers-${nodeVer}" \
@@ -304,7 +284,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   buildPhase = ''
     runHook preBuild
-    bun scripts/build.ts --profile=release-penryn --build-dir=build/release-penryn --zigCommit=${zigCommit}
+    bun scripts/build.ts --profile=release-penryn --build-dir=build/release-penryn
     runHook postBuild
   '';
 
