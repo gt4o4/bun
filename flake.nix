@@ -13,12 +13,13 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    # Old-glibc provider for the Penryn release binary. 22.11 ships glibc
-    # 2.35 — every `bun-penryn` dep has its `stdenv` overridden to this
-    # release's stdenv, so the final binary's GLIBC_ symbol floor is 2.35
-    # instead of unstable's 2.38+. Only used in the bun-penryn derivation;
-    # devShell and everything else stays on unstable.
-    nixpkgs-compat.url = "github:NixOS/nixpkgs/nixos-22.11";
+    # Old-glibc provider for the Penryn release binary. 22.05 ships glibc
+    # 2.34 — the oldest release with gcc-12 available, which we need for
+    # C++23 <expected> used by WebKit/WTF. Every `bun-penryn` dep has its
+    # `stdenv` overridden to this release's stdenv, so the final binary's
+    # GLIBC_ symbol floor is 2.34 instead of unstable's 2.38+. Only used
+    # in the bun-penryn derivation; devShell stays on unstable.
+    nixpkgs-compat.url = "github:NixOS/nixpkgs/nixos-22.05";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -45,11 +46,10 @@
           };
         };
 
-        # Stdenv swapped to 22.11's gcc-12 + glibc + bintools via a fresh
+        # Stdenv swapped to 22.05's gcc-12 + glibc + bintools via a fresh
         # cc-wrapper under unstable's wrapCCWith — drops the backref to
-        # 22.11's stdenv that would otherwise cause overrideCC to infinitely
-        # recurse. gcc-12 matches `clang`'s gccForLibs so both code paths
-        # reference the same libstdc++ ABI.
+        # 22.05's stdenv that would otherwise cause overrideCC to infinitely
+        # recurse.
         compatStdenv = pkgs.overrideCC pkgs.stdenv (
           pkgs.wrapCCWith {
             cc = pkgsCompat.gcc12.cc;
@@ -61,21 +61,19 @@
 
         # LLVM 21 - matching the bootstrap script (targets 21.1.8, actual version from nixpkgs-unstable)
         llvm = pkgs.llvm_21;
-        # clang 21 binary from unstable re-wrapped against 22.11's glibc +
-        # gcc-12 libstdc++ so emitted C/C++ doesn't pull in newer glibc
-        # symbols (no __isoc23_* stdio redirects, no arc4random@2.36).
-        # gcc-12 over gcc-11 because WebKit/WTF uses C++23 <expected>.
-        # Used by both devShell and bun-penryn.
+        # clang 21 (from unstable) re-wrapped against 22.05's glibc + gcc-12
+        # libstdc++ so emitted C/C++ doesn't pull in newer glibc symbols
+        # (no __isoc23_* stdio redirects, no arc4random@2.36). Used by both
+        # devShell and bun-penryn.
         clang = pkgs.wrapCCWith {
           cc = pkgs.clang_21.cc;
           libc = pkgsCompat.glibc;
           bintools = pkgsCompat.gcc12.bintools;
           gccForLibs = pkgsCompat.gcc12.cc;
-          # gcc 12.2's <memory> pulls in bits/stl_tempbuf.h which triggers
-          # -Wdeprecated-declarations on its own internal _Temporary_buffer.
-          # Fixed in gcc 12.3 but we can't get 12.3 against glibc 2.35
-          # prebuilt. Silence the diagnostic so deps with -Werror (boringssl)
-          # still compile.
+          # gcc 12.2's <bits/stl_tempbuf.h> triggers -Wdeprecated-declarations
+          # on its own internal _Temporary_buffer. Fixed in 12.3, but 12.3
+          # isn't prebuilt against old-enough glibc. Silence so deps with
+          # -Werror (boringssl) still compile.
           nixSupport.cc-cflags = [ "-Wno-deprecated-declarations" ];
         };
         lld = pkgs.lld_21;
@@ -250,19 +248,18 @@
           # `nix build .#bun-penryn` — reproducible Bun built for Penryn
           # (pre-SSE4.2 x86_64). See nix/bun-penryn.nix for details.
           #
-          # Runtime libs are compiled against 22.11's stdenv (gcc 11 +
-          # glibc 2.35) so the resulting binary's GLIBC_ floor stays at
-          # 2.35. ICU comes straight from 22.11 (72.1) since WebKit+bun
-          # don't need the 76-only API surface and rebuilding ICU from
-          # unstable source would cost ~30 min for no functional gain.
-          # The other deps use unstable source overridden onto 22.11's
-          # stdenv — keeps our versions current.
+          # Runtime libs are compiled against 22.05's stdenv so the binary's
+          # GLIBC floor is 2.34. ICU is taken from 22.05 directly (71.1);
+          # rebuilding from unstable source would cost ~30 min with no
+          # functional gain — WebKit doesn't need 76-only API. Everything
+          # else uses unstable sources on the compat stdenv, keeping
+          # versions current while capping the glibc ABI surface.
           bun-penryn = pkgs.callPackage ./nix/bun-penryn.nix {
             inherit self bunPackages commonToolchainEnv;
             stdenv = compatStdenv;
-            # ICU stays on 22.11 (72.1) — skip the rebuild.
+            # ICU straight from compat pin (71.1) — skip the ~30min rebuild.
             inherit (pkgsCompat) icu;
-            # Runtime deps: unstable sources rebuilt against 22.11 stdenv.
+            # Runtime deps: unstable sources rebuilt against compat stdenv.
             zstd = pkgs.zstd.override { stdenv = compatStdenv; };
             brotli = pkgs.brotli.override { stdenv = compatStdenv; };
             libdeflate = pkgs.libdeflate.override { stdenv = compatStdenv; };

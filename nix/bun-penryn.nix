@@ -202,8 +202,8 @@ stdenv.mkDerivation (finalAttrs: {
 
   # No autoPatchelfHook — binary stays portable (bare NEEDEDs + /lib64
   # interpreter). Needs LD_LIBRARY_PATH to run from the store.
-  # glibc floor is 2.35 (Ubuntu 22.04+) via the 22.11 stdenv passed in
-  # from flake.nix; runtime NEEDED sonames are satisfied by any glibc ≥2.35.
+  # glibc floor is 2.34 (RHEL 9 / Ubuntu 22.04+) via the compat stdenv
+  # passed in from flake.nix; NEEDED sonames resolve on any glibc ≥ 2.34.
   nativeBuildInputs = bunPackages ++ [
     coreutils
     patchelf
