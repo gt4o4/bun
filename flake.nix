@@ -63,12 +63,22 @@
         llvm = pkgs.llvm_21;
         # clang 21 (from unstable) re-wrapped against 22.05's glibc + gcc-12
         # libstdc++ so emitted C/C++ doesn't pull in newer glibc symbols
-        # (no __isoc23_* stdio redirects, no arc4random@2.36). Used by both
+        # (no __isoc23_* stdio redirects, no arc4random@2.36).
+        #
+        # bintools = lld 21 (inline wrapBintoolsWith) instead of gcc-12's GNU
+        # binutils: both `bin/ld` and `bin/ld.lld` are wrapped, so the final
+        # link — whether it goes through cc-wrapper's default ld or `-fuse-ld=lld`
+        # — always hits an rpath-injecting wrapper around lld. With gcc-12's
+        # bintools, `-fuse-ld=lld` used to find bare ld.lld and skip the wrapper,
+        # so buildInput lib paths never made it into RUNPATH. Used by both
         # devShell and bun-penryn.
         clang = pkgs.wrapCCWith {
           cc = pkgs.clang_21.cc;
           libc = pkgsCompat.glibc;
-          bintools = pkgsCompat.gcc12.bintools;
+          bintools = pkgs.wrapBintoolsWith {
+            bintools = pkgs.llvmPackages_21.bintools-unwrapped;
+            libc = pkgsCompat.glibc;
+          };
           gccForLibs = pkgsCompat.gcc12.cc;
           # gcc 12.2's <bits/stl_tempbuf.h> triggers -Wdeprecated-declarations
           # on its own internal _Temporary_buffer. Fixed in 12.3, but 12.3
@@ -76,7 +86,6 @@
           # -Werror (boringssl) still compile.
           nixSupport.cc-cflags = [ "-Wno-deprecated-declarations" ];
         };
-        lld = pkgs.lld_21;
 
         # Node.js 24 - matching the bootstrap script (targets 24.3.0, actual version from nixpkgs-unstable)
         nodejs = pkgs.nodejs_24;
@@ -96,9 +105,9 @@
           pkgs.ccache
 
           # Compilers and toolchain - version pinned to LLVM 21
+          # (lld comes in via clang's bintools wrapper — no separate entry)
           clang
           llvm
-          lld
           pkgs.rustc
           pkgs.cargo
           pkgs.go
@@ -140,7 +149,7 @@
           export CMAKE_RANLIB="$RANLIB"
         ''
         + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-          export LD="${pkgs.lib.getExe' lld "ld.lld"}"
+          export LD="${clang}/bin/ld"
           export NIX_CFLAGS_LINK="''${NIX_CFLAGS_LINK:+$NIX_CFLAGS_LINK }-fuse-ld=lld"
         '';
 

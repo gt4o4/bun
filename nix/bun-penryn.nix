@@ -224,6 +224,10 @@ stdenv.mkDerivation (finalAttrs: {
   # (see [645/646] strip bun); nothing to shrink or patch afterwards.
   dontStrip = true;
   dontPatchELF = true;
+  # Same reason as the devShell: nixpkgs' default fortify wraps glibc
+  # prototypes with warn_unused_result, which trips -Werror on bun's
+  # getgroups() call in BunProcess.cpp.
+  hardeningDisable = [ "fortify" ];
 
   # GIT_SHA: src = self strips .git, so feed rev from flake metadata.
   # LD_LIBRARY_PATH: post-link smoke test runs the bare-NEEDED binary.
