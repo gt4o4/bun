@@ -21,7 +21,6 @@
   hdrhistogram_c,
   libuv,
   libhwy,
-  patchelf,
 }:
 
 let
@@ -200,14 +199,14 @@ stdenv.mkDerivation (finalAttrs: {
       ;
   };
 
-  # No autoPatchelfHook — binary stays portable (bare NEEDEDs + /lib64
-  # interpreter). Needs LD_LIBRARY_PATH to run from the store.
-  # glibc floor is 2.34 (RHEL 9 / Ubuntu 22.04+) via the compat stdenv
-  # passed in from flake.nix; NEEDED sonames resolve on any glibc ≥ 2.34.
-  nativeBuildInputs = bunPackages ++ [
-    coreutils
-    patchelf
-  ];
+  # Nix doesn't touch the ELF at all: no autoPatchelfHook, no RUNPATH
+  # shrink, no strip, no interpreter swap. NEEDEDs stay as bare sonames
+  # (libz.so.1 etc.) but PT_INTERP keeps the /nix/store path the linker
+  # baked in — so $out/bin/bun runs on this nix host as-is, but needs a
+  # one-off `patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2` by
+  # the end user to run on FHS distros. glibc floor is 2.34 (RHEL 9 /
+  # Ubuntu 22.04+) via the compat stdenv passed in from flake.nix.
+  nativeBuildInputs = bunPackages ++ [ coreutils ];
   buildInputs = [
     icu
     zstd
@@ -221,6 +220,10 @@ stdenv.mkDerivation (finalAttrs: {
   ];
 
   dontUseCmakeConfigure = true;
+  # Skip every stdenv step that touches the ELF. Ninja already stripped
+  # (see [645/646] strip bun); nothing to shrink or patch afterwards.
+  dontStrip = true;
+  dontPatchELF = true;
 
   # GIT_SHA: src = self strips .git, so feed rev from flake metadata.
   # LD_LIBRARY_PATH: post-link smoke test runs the bare-NEEDED binary.
@@ -297,10 +300,6 @@ stdenv.mkDerivation (finalAttrs: {
     install -Dm755 build/release-penryn/bun $out/bin/bun
     ln -s bun $out/bin/bunx
     runHook postInstall
-  '';
-
-  postFixup = ''
-    patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 $out/bin/bun
   '';
 
   meta = with lib; {
