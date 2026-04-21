@@ -22,8 +22,15 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, nixpkgs-compat, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      nixpkgs-compat,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs {
           inherit system;
@@ -38,29 +45,31 @@
           };
         };
 
-        # Fresh cc-wrapper built from 22.11's raw gcc + glibc + bintools using
-        # unstable's wrapCCWith — drops the backref to 22.11's stdenv that
-        # would cause overrideCC to infinitely recurse. wrapCCWith asserts
-        # cc+bintools+libc all share the same glibc, so they all come from
-        # pkgsCompat.
-        compatCC = pkgs.wrapCCWith {
-          cc = pkgsCompat.gcc.cc;
-          libc = pkgsCompat.glibc;
-          bintools = pkgsCompat.stdenv.cc.bintools;
-          gccForLibs = pkgsCompat.gcc.cc;
-        };
-        compatStdenv = pkgs.overrideCC pkgs.stdenv compatCC;
+        # Stdenv swapped to 22.11's gcc-12 + glibc + bintools via a fresh
+        # cc-wrapper under unstable's wrapCCWith — drops the backref to
+        # 22.11's stdenv that would otherwise cause overrideCC to infinitely
+        # recurse. gcc-12 matches `clang`'s gccForLibs so both code paths
+        # reference the same libstdc++ ABI.
+        compatStdenv = pkgs.overrideCC pkgs.stdenv (
+          pkgs.wrapCCWith {
+            cc = pkgsCompat.gcc12.cc;
+            libc = pkgsCompat.glibc;
+            bintools = pkgsCompat.gcc12.bintools;
+            gccForLibs = pkgsCompat.gcc12.cc;
+          }
+        );
 
-        # clang_21 (from unstable) re-wrapped against 22.11 glibc + 22.11
-        # gcc-12 libstdc++. gccForLibs is the load-bearing piece: without
-        # it, clang links against unstable's gcc-15 libstdc++ which
-        # references arc4random@2.36 / __isoc23_strtoul@2.38. We pick
-        # 22.11's gcc-12 (not the default gcc-11) because WebKit/WTF uses
-        # <expected> (C++23) which is only in gcc-12+.
-        compatClang21 = pkgs.wrapCCWith {
+        # LLVM 21 - matching the bootstrap script (targets 21.1.8, actual version from nixpkgs-unstable)
+        llvm = pkgs.llvm_21;
+        # clang 21 binary from unstable re-wrapped against 22.11's glibc +
+        # gcc-12 libstdc++ so emitted C/C++ doesn't pull in newer glibc
+        # symbols (no __isoc23_* stdio redirects, no arc4random@2.36).
+        # gcc-12 over gcc-11 because WebKit/WTF uses C++23 <expected>.
+        # Used by both devShell and bun-penryn.
+        clang = pkgs.wrapCCWith {
           cc = pkgs.clang_21.cc;
           libc = pkgsCompat.glibc;
-          bintools = pkgsCompat.stdenv.cc.bintools;
+          bintools = pkgsCompat.gcc12.bintools;
           gccForLibs = pkgsCompat.gcc12.cc;
           # gcc 12.2's <memory> pulls in bits/stl_tempbuf.h which triggers
           # -Wdeprecated-declarations on its own internal _Temporary_buffer.
@@ -69,13 +78,6 @@
           # still compile.
           nixSupport.cc-cflags = [ "-Wno-deprecated-declarations" ];
         };
-
-        # LLVM 21 - matching the bootstrap script (targets 21.1.8, actual version from nixpkgs-unstable)
-        llvm = pkgs.llvm_21;
-        # clang 21 binary from unstable but wrapped against 22.11's glibc so
-        # the emitted C/C++ doesn't depend on newer glibc symbols (e.g. no
-        # __isoc23_* stdio redirects). Used by both devShell and bun-penryn.
-        clang = compatClang21;
         lld = pkgs.lld_21;
 
         # Node.js 24 - matching the bootstrap script (targets 24.3.0, actual version from nixpkgs-unstable)
@@ -138,7 +140,8 @@
           export CMAKE_CXX_COMPILER="$CXX"
           export CMAKE_AR="$AR"
           export CMAKE_RANLIB="$RANLIB"
-        '' + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+        ''
+        + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
           export LD="${pkgs.lib.getExe' lld "ld.lld"}"
           export NIX_CFLAGS_LINK="''${NIX_CFLAGS_LINK:+$NIX_CFLAGS_LINK }-fuse-ld=lld"
         '';
@@ -147,91 +150,101 @@
         # devShell-only additions.
         # ─────────────────────────────────────────────────────────────────────
 
-        devShellPackages = bunPackages ++ [
-          pkgs.gcc
-          pkgs.curl
-          pkgs.wget
-        ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-          pkgs.gdb # for debugging core dumps (from bootstrap.sh line 1535)
+        devShellPackages =
+          bunPackages
+          ++ [
+            pkgs.gcc
+            pkgs.curl
+            pkgs.wget
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.gdb # for debugging core dumps (from bootstrap.sh line 1535)
 
-          # Chromium dependencies for Puppeteer testing (from bootstrap.sh lines 1397-1483)
-          # X11 and graphics libraries
-          pkgs.xorg.libX11
-          pkgs.xorg.libxcb
-          pkgs.xorg.libXcomposite
-          pkgs.xorg.libXcursor
-          pkgs.xorg.libXdamage
-          pkgs.xorg.libXext
-          pkgs.xorg.libXfixes
-          pkgs.xorg.libXi
-          pkgs.xorg.libXrandr
-          pkgs.xorg.libXrender
-          pkgs.xorg.libXScrnSaver
-          pkgs.xorg.libXtst
-          pkgs.libxkbcommon
-          pkgs.mesa
-          pkgs.nspr
-          pkgs.nss
-          pkgs.cups
-          pkgs.dbus
-          pkgs.expat
-          pkgs.fontconfig
-          pkgs.freetype
-          pkgs.glib
-          pkgs.gtk3
-          pkgs.pango
-          pkgs.cairo
-          pkgs.alsa-lib
-          pkgs.at-spi2-atk
-          pkgs.at-spi2-core
-          pkgs.libgbm # for hardware acceleration
-          pkgs.liberation_ttf # fonts-liberation
-          pkgs.atk
-          pkgs.libdrm
-          pkgs.xorg.libxshmfence
-          pkgs.gdk-pixbuf
-        ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-          # macOS specific dependencies
-          pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-          pkgs.darwin.apple_sdk.frameworks.CoreServices
-          pkgs.darwin.apple_sdk.frameworks.Security
-        ];
+            # Chromium dependencies for Puppeteer testing (from bootstrap.sh lines 1397-1483)
+            # X11 and graphics libraries
+            pkgs.xorg.libX11
+            pkgs.xorg.libxcb
+            pkgs.xorg.libXcomposite
+            pkgs.xorg.libXcursor
+            pkgs.xorg.libXdamage
+            pkgs.xorg.libXext
+            pkgs.xorg.libXfixes
+            pkgs.xorg.libXi
+            pkgs.xorg.libXrandr
+            pkgs.xorg.libXrender
+            pkgs.xorg.libXScrnSaver
+            pkgs.xorg.libXtst
+            pkgs.libxkbcommon
+            pkgs.mesa
+            pkgs.nspr
+            pkgs.nss
+            pkgs.cups
+            pkgs.dbus
+            pkgs.expat
+            pkgs.fontconfig
+            pkgs.freetype
+            pkgs.glib
+            pkgs.gtk3
+            pkgs.pango
+            pkgs.cairo
+            pkgs.alsa-lib
+            pkgs.at-spi2-atk
+            pkgs.at-spi2-core
+            pkgs.libgbm # for hardware acceleration
+            pkgs.liberation_ttf # fonts-liberation
+            pkgs.atk
+            pkgs.libdrm
+            pkgs.xorg.libxshmfence
+            pkgs.gdk-pixbuf
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            # macOS specific dependencies
+            pkgs.darwin.apple_sdk.frameworks.CoreFoundation
+            pkgs.darwin.apple_sdk.frameworks.CoreServices
+            pkgs.darwin.apple_sdk.frameworks.Security
+          ];
 
       in
       {
-        devShells.default = (pkgs.mkShell.override {
-          stdenv = pkgs.clangStdenv;
-        }) {
-          packages = devShellPackages;
-          hardeningDisable = [ "fortify" ];
+        devShells.default =
+          (pkgs.mkShell.override {
+            stdenv = pkgs.clangStdenv;
+          })
+            {
+              packages = devShellPackages;
+              hardeningDisable = [ "fortify" ];
 
-          shellHook = commonToolchainEnv + ''
-            export CMAKE_SYSTEM_PROCESSOR="$(uname -m)"
-            export TMPDIR="''${TMPDIR:-/tmp}"
-          '' + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath devShellPackages}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          '' + ''
+              shellHook =
+                commonToolchainEnv
+                + ''
+                  export CMAKE_SYSTEM_PROCESSOR="$(uname -m)"
+                  export TMPDIR="''${TMPDIR:-/tmp}"
+                ''
+                + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                  export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath devShellPackages}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                ''
+                + ''
 
-            # Print welcome message
-            echo "====================================="
-            echo "Bun Development Environment"
-            echo "====================================="
-            echo "Node.js: $(node --version 2>/dev/null || echo 'not found')"
-            echo "Bun: $(bun --version 2>/dev/null || echo 'not found')"
-            echo "Clang: $(clang --version 2>/dev/null | head -n1 || echo 'not found')"
-            echo "CMake: $(cmake --version 2>/dev/null | head -n1 || echo 'not found')"
-            echo "LLVM: ${llvm.version}"
-            echo ""
-            echo "Quick start:"
-            echo "  bun bd                    # Build debug binary"
-            echo "  bun bd test <test-file>   # Run tests"
-            echo "====================================="
-          '';
+                  # Print welcome message
+                  echo "====================================="
+                  echo "Bun Development Environment"
+                  echo "====================================="
+                  echo "Node.js: $(node --version 2>/dev/null || echo 'not found')"
+                  echo "Bun: $(bun --version 2>/dev/null || echo 'not found')"
+                  echo "Clang: $(clang --version 2>/dev/null | head -n1 || echo 'not found')"
+                  echo "CMake: $(cmake --version 2>/dev/null | head -n1 || echo 'not found')"
+                  echo "LLVM: ${llvm.version}"
+                  echo ""
+                  echo "Quick start:"
+                  echo "  bun bd                    # Build debug binary"
+                  echo "  bun bd test <test-file>   # Run tests"
+                  echo "====================================="
+                '';
 
-          # Additional environment variables
-          CMAKE_BUILD_TYPE = "Debug";
-          ENABLE_CCACHE = "1";
-        };
+              # Additional environment variables
+              CMAKE_BUILD_TYPE = "Debug";
+              ENABLE_CCACHE = "1";
+            };
 
         packages = {
           # `nix build .#bun-penryn` — reproducible Bun built for Penryn
