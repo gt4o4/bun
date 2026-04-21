@@ -239,7 +239,10 @@ export async function configure(partial: PartialConfig): Promise<ConfigureResult
   // auto-trigger).
   if (output.exe !== undefined) {
     const defaultTarget = output.strippedExe !== undefined ? n.rel(output.strippedExe) : "bun";
-    const targets = [defaultTarget, "check"];
+    const targets = [defaultTarget];
+    // See emitBun: baseline/penryn profiles skip the smoke test (the build
+    // sandbox can't load a sub-native binary), so the phony isn't emitted.
+    if (!cfg.baseline) targets.push("check");
     if (output.dsym !== undefined) targets.push(n.rel(output.dsym));
     n.default(targets);
   }
