@@ -484,10 +484,7 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
 
   // ─── Validation ───
   assert(!baseline || x64, "baseline=true requires arch=x64 (baseline disables AVX which is x64-only)");
-  assert(
-    x64Cpu === "haswell" || x64,
-    "x64Cpu requires arch=x64 (sub-haswell tiers are x64-only)",
-  );
+  assert(x64Cpu === "haswell" || x64, "x64Cpu requires arch=x64 (sub-haswell tiers are x64-only)");
   // No prebuilt WebKit exists below nehalem; force --webkit=local for penryn.
   assert(
     x64Cpu !== "penryn" || partial.webkit === "local",

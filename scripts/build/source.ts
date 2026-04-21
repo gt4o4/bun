@@ -1171,6 +1171,11 @@ function emitNestedCmake(
   args.push(`-DCMAKE_BUILD_TYPE=${buildType}`);
   args.push(`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`);
   args.push(`-DBUILD_SHARED_LIBS=OFF`);
+  // We never build dep tests in bun's pipeline. Skipping them avoids
+  // try_run feature-detection (e.g. benchmark's regex tests) that breaks
+  // under cross-stdenv builds where the test binary's libc doesn't match
+  // the runner's.
+  args.push(`-DBUILD_TESTING=OFF`);
 
   // Windows MSVC runtime: CMP0091 NEW (CMake 3.15+) uses this property
   // instead of injecting /MD into CMAKE_<LANG>_FLAGS_<CONFIG>. Without

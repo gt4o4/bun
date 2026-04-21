@@ -414,11 +414,7 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
       ...manifestLinkFlags(cfg),
       ...shims.ldflags,
     ],
-    implicitInputs: [
-      ...linkImplicitInputs(cfg),
-      ...shims.implicitInputs,
-      ...depTrackedLibFiles,
-    ],
+    implicitInputs: [...linkImplicitInputs(cfg), ...shims.implicitInputs, ...depTrackedLibFiles],
   });
 
   // ─── Step 8: post-link (strip + dsymutil) ───
@@ -454,7 +450,13 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   // ASAN binaries to run from subprocesses (shadow memory layout conflict
   // with ELF_ET_DYN_BASE, see sanitizers/856). We try with setarch first,
   // fall back to direct invocation.
-  emitSmokeTest(n, cfg, exe, exeName);
+  //
+  // Skipped on baseline/penryn: these target sub-native CPUs and under
+  // Nix build against a compat stdenv (glibc 2.35 libs alongside
+  // unstable-glibc 2.42 nativeBuildInputs). The build host can't load
+  // the binary without bouncing through QEMU or the right libstdc++,
+  // so the smoke-test is validated on the deployed machine instead.
+  if (!cfg.baseline) emitSmokeTest(n, cfg, exe, exeName);
 
   return { exe, strippedExe, dsym, deps, codegen, zigObjects, objects: allObjects };
 }
@@ -570,7 +572,8 @@ function emitLinkOnly(n: Ninja, cfg: Config): BunOutput {
     if (cfg.darwin) dsym = emitDsymutil(n, cfg, exe, exeName);
   }
   if (strippedExe === undefined) n.phony("bun", [exe]);
-  emitSmokeTest(n, cfg, exe, exeName);
+  // See emitBun: smoke test skipped on baseline/penryn due to sub-native CPU.
+  if (!cfg.baseline) emitSmokeTest(n, cfg, exe, exeName);
 
   return {
     exe,

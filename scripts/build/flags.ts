@@ -727,8 +727,17 @@ export const linkerFlags: Flag[] = [
   },
   {
     flag: ["-static-libstdc++", "-static-libgcc"],
-    when: c => c.linux && c.abi !== "musl",
+    when: c => c.linux && c.abi !== "musl" && c.x64Cpu !== "penryn",
     desc: "Static C++ runtime (don't depend on host libstdc++)",
+  },
+  {
+    // Penryn ships against the distro's libstdc++ instead of embedding
+    // one. The release build's buildInputs pin glibc 2.35 (Ubuntu 22.04+);
+    // the matching libstdc++ is already on any such host, and dropping the
+    // static copy shaves ~5 MB and lets security updates propagate.
+    flag: ["-lstdc++", "-lgcc_s"],
+    when: c => c.linux && c.abi !== "musl" && c.x64Cpu === "penryn",
+    desc: "Dynamic C++ runtime (penryn release — glibc 2.35 target)",
   },
   {
     flag: ["-lstdc++", "-lgcc"],

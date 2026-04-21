@@ -13,10 +13,16 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Old-glibc provider for the Penryn release binary. 22.11 ships glibc
+    # 2.35 — every `bun-penryn` dep has its `stdenv` overridden to this
+    # release's stdenv, so the final binary's GLIBC_ symbol floor is 2.35
+    # instead of unstable's 2.38+. Only used in the bun-penryn derivation;
+    # devShell and everything else stays on unstable.
+    nixpkgs-compat.url = "github:NixOS/nixpkgs/nixos-22.11";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, nixpkgs-compat, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -25,10 +31,51 @@
             allowUnfree = true;
           };
         };
+        pkgsCompat = import nixpkgs-compat {
+          inherit system;
+          config = {
+            allowUnfree = true;
+          };
+        };
+
+        # Fresh cc-wrapper built from 22.11's raw gcc + glibc + bintools using
+        # unstable's wrapCCWith — drops the backref to 22.11's stdenv that
+        # would cause overrideCC to infinitely recurse. wrapCCWith asserts
+        # cc+bintools+libc all share the same glibc, so they all come from
+        # pkgsCompat.
+        compatCC = pkgs.wrapCCWith {
+          cc = pkgsCompat.gcc.cc;
+          libc = pkgsCompat.glibc;
+          bintools = pkgsCompat.stdenv.cc.bintools;
+          gccForLibs = pkgsCompat.gcc.cc;
+        };
+        compatStdenv = pkgs.overrideCC pkgs.stdenv compatCC;
+
+        # clang_21 (from unstable) re-wrapped against 22.11 glibc + 22.11
+        # gcc-12 libstdc++. gccForLibs is the load-bearing piece: without
+        # it, clang links against unstable's gcc-15 libstdc++ which
+        # references arc4random@2.36 / __isoc23_strtoul@2.38. We pick
+        # 22.11's gcc-12 (not the default gcc-11) because WebKit/WTF uses
+        # <expected> (C++23) which is only in gcc-12+.
+        compatClang21 = pkgs.wrapCCWith {
+          cc = pkgs.clang_21.cc;
+          libc = pkgsCompat.glibc;
+          bintools = pkgsCompat.stdenv.cc.bintools;
+          gccForLibs = pkgsCompat.gcc12.cc;
+          # gcc 12.2's <memory> pulls in bits/stl_tempbuf.h which triggers
+          # -Wdeprecated-declarations on its own internal _Temporary_buffer.
+          # Fixed in gcc 12.3 but we can't get 12.3 against glibc 2.35
+          # prebuilt. Silence the diagnostic so deps with -Werror (boringssl)
+          # still compile.
+          nixSupport.cc-cflags = [ "-Wno-deprecated-declarations" ];
+        };
 
         # LLVM 21 - matching the bootstrap script (targets 21.1.8, actual version from nixpkgs-unstable)
         llvm = pkgs.llvm_21;
-        clang = pkgs.clang_21;
+        # clang 21 binary from unstable but wrapped against 22.11's glibc so
+        # the emitted C/C++ doesn't depend on newer glibc symbols (e.g. no
+        # __isoc23_* stdio redirects). Used by both devShell and bun-penryn.
+        clang = compatClang21;
         lld = pkgs.lld_21;
 
         # Node.js 24 - matching the bootstrap script (targets 24.3.0, actual version from nixpkgs-unstable)
@@ -82,9 +129,6 @@
           pkgs.xz
         ];
 
-        # Common toolchain env exports. Identical in both the devShell
-        # (shellHook) and the bun-penryn derivation (configurePhase). Changing
-        # this here updates both — no drift.
         commonToolchainEnv = ''
           export CC="${pkgs.lib.getExe clang}"
           export CXX="${pkgs.lib.getExe' clang "clang++"}"
@@ -192,12 +236,42 @@
         packages = {
           # `nix build .#bun-penryn` — reproducible Bun built for Penryn
           # (pre-SSE4.2 x86_64). See nix/bun-penryn.nix for details.
+          #
+          # Runtime libs are compiled against 22.11's stdenv (gcc 11 +
+          # glibc 2.35) so the resulting binary's GLIBC_ floor stays at
+          # 2.35. ICU comes straight from 22.11 (72.1) since WebKit+bun
+          # don't need the 76-only API surface and rebuilding ICU from
+          # unstable source would cost ~30 min for no functional gain.
+          # The other deps use unstable source overridden onto 22.11's
+          # stdenv — keeps our versions current.
           bun-penryn = pkgs.callPackage ./nix/bun-penryn.nix {
-            inherit
-              self
-              bunPackages
-              commonToolchainEnv
-              ;
+            inherit self bunPackages commonToolchainEnv;
+            stdenv = compatStdenv;
+            # ICU stays on 22.11 (72.1) — skip the rebuild.
+            inherit (pkgsCompat) icu;
+            # Runtime deps: unstable sources rebuilt against 22.11 stdenv.
+            zstd = pkgs.zstd.override { stdenv = compatStdenv; };
+            brotli = pkgs.brotli.override { stdenv = compatStdenv; };
+            libdeflate = pkgs.libdeflate.override { stdenv = compatStdenv; };
+            c-ares = pkgs.c-ares.override { stdenv = compatStdenv; };
+            # withZlibCompat=true keeps the libz.so.1 soname bun's -lz expects
+            # (native zlib-ng ships libz-ng.so.2).
+            zlib-ng = pkgs.zlib-ng.override {
+              stdenv = compatStdenv;
+              withZlibCompat = true;
+            };
+            hdrhistogram_c = pkgs.hdrhistogram_c.override { stdenv = compatStdenv; };
+            libuv = pkgs.libuv.override { stdenv = compatStdenv; };
+            # libhwy tests link against gtest from unstable (built with glibc
+            # 2.42 — carries __isoc23_*@2.38 refs). Disable the test build
+            # since we only consume libhwy.a.
+            libhwy = (pkgs.libhwy.override { stdenv = compatStdenv; }).overrideAttrs (old: {
+              cmakeFlags = (old.cmakeFlags or [ ]) ++ [
+                "-DBUILD_TESTING=OFF"
+                "-DHWY_ENABLE_TESTS=OFF"
+              ];
+              doCheck = false;
+            });
           };
         };
       }
