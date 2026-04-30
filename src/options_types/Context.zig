@@ -54,6 +54,7 @@ pub const ContextData = struct {
         emit_dce_annotations: bool = true,
         output_format: BundleEnums.Format = .esm,
         bytecode: bool = false,
+        already_bundled: bool = false,
         banner: []const u8 = "",
         footer: []const u8 = "",
         css_chunking: bool = false,
