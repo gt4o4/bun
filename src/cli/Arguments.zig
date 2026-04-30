@@ -171,6 +171,7 @@ pub const build_only_params = [_]ParamType{
     clap.parseParam("--no-compile-autoload-package-json Disable autoloading of package.json at runtime in standalone executable") catch unreachable,
     clap.parseParam("--compile-executable-path <STR>  Path to a Bun executable to use for cross-compilation instead of downloading") catch unreachable,
     clap.parseParam("--bytecode                       Use a bytecode cache") catch unreachable,
+    clap.parseParam("--already-bundled                Skip parsing/transforming entry points and only emit a bytecode cache (.jsc) for each. Requires --bytecode --target=bun --format=cjs.") catch unreachable,
     clap.parseParam("--watch                          Automatically restart the process on file change") catch unreachable,
     clap.parseParam("--no-clear-screen                Disable clearing the terminal screen on reload when --watch is enabled") catch unreachable,
     clap.parseParam("--target <STR>                   The intended execution environment for the bundle. \"browser\", \"bun\" or \"node\"") catch unreachable,
@@ -1059,6 +1060,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
     if (cmd == .BuildCommand) {
         ctx.bundler_options.transform_only = args.flag("--no-bundle");
         ctx.bundler_options.bytecode = args.flag("--bytecode");
+        ctx.bundler_options.already_bundled = args.flag("--already-bundled");
 
         const production = args.flag("--production");
 
