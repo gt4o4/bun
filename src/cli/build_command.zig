@@ -9,6 +9,10 @@ pub const BuildCommand = struct {
             ctx.args.target = .bun;
         }
 
+        if (ctx.bundler_options.already_bundled) {
+            return execAlreadyBundled(ctx);
+        }
+
         if (ctx.bundler_options.bake) {
             return bun.bake.production.buildCommand(ctx);
         }
@@ -792,6 +796,111 @@ fn printSummary(bundled_end: i128, minify_duration: u64, minified: bool, input_c
             reachable_file_count,
         },
     );
+}
+
+fn execAlreadyBundled(ctx: Command.Context) !void {
+    const opts = &ctx.bundler_options;
+
+    if (!opts.bytecode) {
+        Output.errGeneric("--already-bundled requires --bytecode (the only thing it produces is a .jsc cache)", .{});
+        Global.exit(1);
+    }
+    if (opts.compile) {
+        Output.errGeneric("--already-bundled does not support --compile yet", .{});
+        Global.exit(1);
+    }
+    if (opts.output_format != .cjs) {
+        Output.errGeneric("--already-bundled requires --format=cjs (ESM bytecode without --compile is unsupported)", .{});
+        Global.exit(1);
+    }
+
+    const entry_points = ctx.args.entry_points;
+    if (entry_points.len == 0) {
+        Output.errGeneric("--already-bundled requires at least one entry point", .{});
+        Global.exit(1);
+    }
+
+    const has_outdir = opts.outdir.len > 0;
+    const has_outfile = opts.outfile.len > 0;
+    if (!has_outdir and !has_outfile) {
+        Output.errGeneric("--already-bundled requires --outdir or --outfile", .{});
+        Global.exit(1);
+    }
+    if (has_outfile and entry_points.len != 1) {
+        Output.errGeneric("--outfile cannot be used with multiple entry points; use --outdir", .{});
+        Global.exit(1);
+    }
+
+    if (has_outdir) {
+        bun.makePath(std.fs.cwd(), opts.outdir) catch |err| {
+            Output.errGeneric("failed to create --outdir {s}: {s}", .{ opts.outdir, @errorName(err) });
+            Global.exit(1);
+        };
+    }
+
+    var js_path_buf: bun.PathBuffer = undefined;
+    var jsc_path_buf: bun.PathBuffer = undefined;
+
+    for (entry_points) |entry_point| {
+        const source = switch (bun.sys.File.readFrom(bun.FD.cwd(), entry_point, bun.default_allocator)) {
+            .result => |bytes| bytes,
+            .err => |err| {
+                Output.errGeneric("failed to read {s}: {s}", .{ entry_point, @tagName(err.getErrno()) });
+                Global.exit(1);
+            },
+        };
+        defer bun.default_allocator.free(source);
+
+        const out_js_path: [:0]const u8 = if (has_outfile)
+            bun.path.joinStringBufZ(&js_path_buf, &.{opts.outfile}, .auto)
+        else
+            bun.path.joinStringBufZ(&js_path_buf, &.{ opts.outdir, bun.path.basename(entry_point) }, .auto);
+
+        // Construct the .jsc sibling path from the .js output path.
+        if (out_js_path.len + bun.bytecode_extension.len >= jsc_path_buf.len) {
+            Output.errGeneric("output path too long: {s}", .{out_js_path});
+            Global.exit(1);
+        }
+        @memcpy(jsc_path_buf[0..out_js_path.len], out_js_path);
+        @memcpy(jsc_path_buf[out_js_path.len..][0..bun.bytecode_extension.len], bun.bytecode_extension);
+        jsc_path_buf[out_js_path.len + bun.bytecode_extension.len] = 0;
+        const jsc_path: [:0]const u8 = jsc_path_buf[0 .. out_js_path.len + bun.bytecode_extension.len :0];
+
+        // Source URL: bundler uses "<rel>.jsc" — the value isn't part of the
+        // bytecode hash check at runtime, but we match for symmetry with the
+        // existing `bun build --bytecode` output.
+        var source_provider_url = bun.String.cloneUTF8(jsc_path);
+        defer source_provider_url.deref();
+
+        const result = bun.jsc.CachedBytecode.generateForCJS(&source_provider_url, source) orelse {
+            Output.errGeneric("failed to generate bytecode for {s} (parse error in source?)", .{entry_point});
+            Global.exit(1);
+        };
+        const bytecode = result[0];
+        const cached_bytecode = result[1];
+        defer cached_bytecode.deref();
+
+        switch (bun.sys.File.writeFile(bun.FD.cwd(), out_js_path, source)) {
+            .result => {},
+            .err => |err| {
+                Output.errGeneric("failed to write {s}: {s}", .{ out_js_path, @tagName(err.getErrno()) });
+                Global.exit(1);
+            },
+        }
+
+        switch (bun.sys.File.writeFile(bun.FD.cwd(), jsc_path, bytecode)) {
+            .result => {},
+            .err => |err| {
+                Output.errGeneric("failed to write {s}: {s}", .{ jsc_path, @tagName(err.getErrno()) });
+                Global.exit(1);
+            },
+        }
+
+        Output.prettyln("  <green>{s}<r>  <d>{f}<r>", .{ out_js_path, bun.fmt.size(source.len, .{ .space_between_number_and_unit = true }) });
+        Output.prettyln("  <green>{s}<r>  <d>{f}<r>", .{ jsc_path, bun.fmt.size(bytecode.len, .{ .space_between_number_and_unit = true }) });
+    }
+
+    Output.flush();
 }
 
 const string = []const u8;
