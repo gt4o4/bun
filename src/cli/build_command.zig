@@ -838,6 +838,14 @@ fn execAlreadyBundled(ctx: Command.Context) !void {
         };
     }
 
+    // Bring up just enough JSC to call generateForCJS:
+    //   - flag the thread so WTFTimer__create no-ops (no event loop here),
+    //   - run JSCInitialize so options are finalized before getVMForBytecodeCache().
+    // Mirrors the regular bundler bytecode pass at
+    // bundler/linker_context/generateChunksInParallel.zig:597-598.
+    bun.jsc.VirtualMachine.is_bundler_thread_for_bytecode_cache = true;
+    bun.jsc.initialize(false);
+
     var js_path_buf: bun.PathBuffer = undefined;
     var jsc_path_buf: bun.PathBuffer = undefined;
 
@@ -851,10 +859,13 @@ fn execAlreadyBundled(ctx: Command.Context) !void {
         };
         defer bun.default_allocator.free(source);
 
-        const out_js_path: [:0]const u8 = if (has_outfile)
-            bun.path.joinStringBufZ(&js_path_buf, &.{opts.outfile}, .auto)
-        else
-            bun.path.joinStringBufZ(&js_path_buf, &.{ opts.outdir, bun.path.basename(entry_point) }, .auto);
+        const out_js_path: [:0]const u8 = if (has_outfile) blk: {
+            const parts = [_][]const u8{opts.outfile};
+            break :blk bun.path.joinStringBufZ(&js_path_buf, &parts, .auto);
+        } else blk: {
+            const parts = [_][]const u8{ opts.outdir, bun.path.basename(entry_point) };
+            break :blk bun.path.joinStringBufZ(&js_path_buf, &parts, .auto);
+        };
 
         // Construct the .jsc sibling path from the .js output path.
         if (out_js_path.len + bun.bytecode_extension.len >= jsc_path_buf.len) {
