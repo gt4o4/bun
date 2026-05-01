@@ -89,6 +89,7 @@ export const profiles = {
     webkit: "local",
     x64Cpu: "penryn",
     lto: true,
+    dynamicLibstdcxx: true,
     // Link unpatched, ABI-stable deps from the system instead of statically
     // bundling them. Penryn-class boxes are typically running multiple bun
     // workers; shared-library .text pages dedup across processes for an
@@ -112,6 +113,47 @@ export const profiles = {
     // Skipped: boringssl/mimalloc/tinycc (oven-sh forks), libarchive/
     // lolhtml/lshpack (load-bearing patches), picohttpparser (single-source
     // direct compile, nothing to swap).
+    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv", "highway"],
+  },
+
+  /**
+   * x64 baseline build targeting Nehalem (2008). SSE4.2 + POPCNT, no AVX.
+   * Same dynamic-link / compat-stdenv style as release-penryn — built under
+   * the nix flake's compat stdenv so the binary's glibc floor stays at 2.34
+   * (RHEL 9 / Ubuntu 22.04+). Local WebKit kept (despite a prebuilt baseline
+   * artifact existing) so WebKit code is built under the same compat stdenv
+   * and doesn't pull in newer glibc symbols from a different build host.
+   * LTO required to avoid the webkit.ts:260 silent Release→RelWithDebInfo
+   * downgrade for local WebKit.
+   *
+   * Runtime caveat: WebAssembly v128 SIMD still SIGILLs because JSC's LLInt
+   * `ipint_simd_*` emits AVX (vpshufb/vroundps/vroundpd) — Haswell is the
+   * floor for that. Plain JS, native popcntq (Nehalem+), and non-SIMD WASM
+   * all work.
+   */
+  "release-nehalem": {
+    buildType: "Release",
+    webkit: "local",
+    x64Cpu: "nehalem",
+    lto: true,
+    dynamicLibstdcxx: true,
+    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv", "highway"],
+  },
+
+  /**
+   * x64 Haswell (2013) — AVX2 + BMI2, no runtime caveats. Same dynamic-link
+   * / compat-stdenv release-tier style as release-penryn / release-nehalem
+   * (glibc 2.34 floor, system-linked deps for RSS dedup, local WebKit + LTO
+   * for parity). Equivalent to release-local in terms of CPU target, but
+   * with the older-distro-friendly glibc floor that the bare release-local
+   * profile doesn't apply.
+   */
+  "release-haswell": {
+    buildType: "Release",
+    webkit: "local",
+    x64Cpu: "haswell",
+    lto: true,
+    dynamicLibstdcxx: true,
     systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv", "highway"],
   },
 

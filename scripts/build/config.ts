@@ -126,6 +126,14 @@ export interface Config {
   smol: boolean;
   staticSqlite: boolean;
   staticLibatomic: boolean;
+  /**
+   * Link libstdc++ / libgcc dynamically against the host instead of
+   * embedding static copies. Set on the release-<target> profiles whose
+   * compat-stdenv build environment matches their target glibc floor —
+   * the host's libstdc++ ABI is already known compatible. Saves ~5 MB
+   * binary size and lets distro security updates propagate.
+   */
+  dynamicLibstdcxx: boolean;
   tinycc: boolean;
   valgrind: boolean;
   fuzzilli: boolean;
@@ -242,6 +250,7 @@ export interface PartialConfig {
   canary?: boolean;
   staticSqlite?: boolean;
   staticLibatomic?: boolean;
+  dynamicLibstdcxx?: boolean;
   tinycc?: boolean;
   valgrind?: boolean;
   fuzzilli?: boolean;
@@ -450,6 +459,11 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
   // failure is loud ("cannot find -l:libatomic.a") and the fix is obvious.
   const staticLibatomic = partial.staticLibatomic ?? true;
 
+  // Default off: standard release/debug builds embed libstdc++ statically
+  // so they don't depend on the host's C++ runtime. Compat-stdenv release
+  // tiers (release-penryn/-nehalem/-haswell) opt in via their profile.
+  const dynamicLibstdcxx = partial.dynamicLibstdcxx ?? false;
+
   // TinyCC: off on Windows ARM64 (not supported), on elsewhere
   const tinycc = partial.tinycc ?? !(windows && arm64);
 
@@ -550,6 +564,7 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     smol,
     staticSqlite,
     staticLibatomic,
+    dynamicLibstdcxx,
     tinycc,
     valgrind,
     fuzzilli,
