@@ -91,11 +91,11 @@
         nodejs = pkgs.nodejs_24;
 
         # ─────────────────────────────────────────────────────────────────────
-        # Shared between devShell and nix/bun-penryn.nix.
+        # Shared between devShell and nix/bun-target.nix.
         # ─────────────────────────────────────────────────────────────────────
 
         # Build tools + libraries required to compile bun itself. The devShell
-        # adds GCC, debug tooling, and Chromium test deps on top; nix/bun-penryn
+        # adds GCC, debug tooling, and Chromium test deps on top; nix/bun-target
         # consumes this list as-is.
         bunPackages = [
           # Core build tools
@@ -211,6 +211,58 @@
             pkgs.darwin.apple_sdk.frameworks.Security
           ];
 
+        # `nix build .#bun-<target>` — reproducible Bun built for a specific
+        # x64 CPU tier (penryn / nehalem / haswell). See nix/bun-target.nix
+        # for the per-target details.
+        #
+        # Runtime libs are compiled against 22.05's stdenv so the binary's
+        # GLIBC floor is 2.34. ICU is taken from 22.05 directly (71.1);
+        # rebuilding from unstable source would cost ~30 min with no
+        # functional gain — WebKit doesn't need 76-only API. Everything
+        # else uses unstable sources on the compat stdenv, keeping
+        # versions current while capping the glibc ABI surface.
+        compatDeps = {
+          stdenv = compatStdenv;
+          # ICU straight from compat pin (71.1) — skip the ~30min rebuild.
+          inherit (pkgsCompat) icu;
+          # Runtime deps: unstable sources rebuilt against compat stdenv.
+          zstd = pkgs.zstd.override { stdenv = compatStdenv; };
+          brotli = pkgs.brotli.override { stdenv = compatStdenv; };
+          libdeflate = pkgs.libdeflate.override { stdenv = compatStdenv; };
+          c-ares = pkgs.c-ares.override { stdenv = compatStdenv; };
+          # withZlibCompat=true keeps the libz.so.1 soname bun's -lz expects
+          # (native zlib-ng ships libz-ng.so.2).
+          zlib-ng = pkgs.zlib-ng.override {
+            stdenv = compatStdenv;
+            withZlibCompat = true;
+          };
+          hdrhistogram_c = pkgs.hdrhistogram_c.override { stdenv = compatStdenv; };
+          libuv = pkgs.libuv.override { stdenv = compatStdenv; };
+          # libhwy tests link against gtest from unstable (built with glibc
+          # 2.42 — carries __isoc23_*@2.38 refs). Disable the test build
+          # since we only consume libhwy.a.
+          libhwy = (pkgs.libhwy.override { stdenv = compatStdenv; }).overrideAttrs (old: {
+            cmakeFlags = (old.cmakeFlags or [ ]) ++ [
+              "-DBUILD_TESTING=OFF"
+              "-DHWY_ENABLE_TESTS=OFF"
+            ];
+            doCheck = false;
+          });
+        };
+
+        mkBunTarget =
+          target:
+          pkgs.callPackage ./nix/bun-target.nix (
+            compatDeps
+            // {
+              inherit
+                self
+                bunPackages
+                commonToolchainEnv
+                target
+                ;
+            }
+          );
       in
       {
         devShells.default =
@@ -254,44 +306,9 @@
             };
 
         packages = {
-          # `nix build .#bun-penryn` — reproducible Bun built for Penryn
-          # (pre-SSE4.2 x86_64). See nix/bun-penryn.nix for details.
-          #
-          # Runtime libs are compiled against 22.05's stdenv so the binary's
-          # GLIBC floor is 2.34. ICU is taken from 22.05 directly (71.1);
-          # rebuilding from unstable source would cost ~30 min with no
-          # functional gain — WebKit doesn't need 76-only API. Everything
-          # else uses unstable sources on the compat stdenv, keeping
-          # versions current while capping the glibc ABI surface.
-          bun-penryn = pkgs.callPackage ./nix/bun-penryn.nix {
-            inherit self bunPackages commonToolchainEnv;
-            stdenv = compatStdenv;
-            # ICU straight from compat pin (71.1) — skip the ~30min rebuild.
-            inherit (pkgsCompat) icu;
-            # Runtime deps: unstable sources rebuilt against compat stdenv.
-            zstd = pkgs.zstd.override { stdenv = compatStdenv; };
-            brotli = pkgs.brotli.override { stdenv = compatStdenv; };
-            libdeflate = pkgs.libdeflate.override { stdenv = compatStdenv; };
-            c-ares = pkgs.c-ares.override { stdenv = compatStdenv; };
-            # withZlibCompat=true keeps the libz.so.1 soname bun's -lz expects
-            # (native zlib-ng ships libz-ng.so.2).
-            zlib-ng = pkgs.zlib-ng.override {
-              stdenv = compatStdenv;
-              withZlibCompat = true;
-            };
-            hdrhistogram_c = pkgs.hdrhistogram_c.override { stdenv = compatStdenv; };
-            libuv = pkgs.libuv.override { stdenv = compatStdenv; };
-            # libhwy tests link against gtest from unstable (built with glibc
-            # 2.42 — carries __isoc23_*@2.38 refs). Disable the test build
-            # since we only consume libhwy.a.
-            libhwy = (pkgs.libhwy.override { stdenv = compatStdenv; }).overrideAttrs (old: {
-              cmakeFlags = (old.cmakeFlags or [ ]) ++ [
-                "-DBUILD_TESTING=OFF"
-                "-DHWY_ENABLE_TESTS=OFF"
-              ];
-              doCheck = false;
-            });
-          };
+          bun-penryn = mkBunTarget "penryn";
+          bun-nehalem = mkBunTarget "nehalem";
+          bun-haswell = mkBunTarget "haswell";
         };
       }
     );

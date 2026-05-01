@@ -2,6 +2,10 @@
   self,
   bunPackages,
   commonToolchainEnv,
+  # x64 CPU tier the build will target. One of: "penryn", "nehalem", "haswell".
+  # Selects the corresponding `release-${target}` build profile and feeds the
+  # name into pname / version / build-dir / meta.description.
+  target,
 
   lib,
   stdenv,
@@ -11,7 +15,7 @@
   rustPlatform,
   coreutils,
   cacert,
-  # Dynamic-linked system deps for release-penryn.
+  # Dynamic-linked system deps shared across release-tier builds.
   icu,
   zstd,
   brotli,
@@ -29,7 +33,8 @@ let
 
   webkitRev = "4d5e75ebd84a14edbc7ae264245dcd77fe597c10";
   # Stable zig. Must match scripts/build/zig.ts::ZIG_COMMIT — parallel zig
-  # + penryn LTO is pathologically slow, so we stay on serial codegen.
+  # + LTO is pathologically slow on these release-tier builds, so we stay on
+  # serial codegen.
   zigCommit = "365343af4fc5a1a632e6b54aadd0b87be30edd81";
   nodeVer = "24.3.0";
 
@@ -142,7 +147,7 @@ let
   # FOD: download cache from `bun install` (hashing node_modules would be
   # fragile due to symlinks / hoisting).
   bunInstallCache = stdenv.mkDerivation {
-    pname = "bun-penryn-install-cache";
+    pname = "bun-${target}-install-cache";
     version = bunVersion;
     src = bunSrc;
 
@@ -183,8 +188,8 @@ let
   };
 in
 stdenv.mkDerivation (finalAttrs: {
-  pname = "bun-penryn";
-  version = "1.3.13-penryn-${bunVersion}";
+  pname = "bun-${target}";
+  version = "1.3.13-${target}-${bunVersion}";
 
   src = bunSrc;
 
@@ -240,7 +245,7 @@ stdenv.mkDerivation (finalAttrs: {
       lib.removeSuffix "-dirty" self.dirtyRev
     else
       "unknown";
-  # Only buildInputs. No libstdc++ here: the baseline/penryn profile skips
+  # Only buildInputs. No libstdc++ here: sub-native release tiers skip
   # the post-link smoke test, so bun-profile never runs inside the sandbox.
   LD_LIBRARY_PATH = lib.makeLibraryPath finalAttrs.buildInputs;
 
@@ -295,19 +300,23 @@ stdenv.mkDerivation (finalAttrs: {
 
   buildPhase = ''
     runHook preBuild
-    bun scripts/build.ts --profile=release-penryn --build-dir=build/release-penryn
+    bun scripts/build.ts --profile=release-${target} --build-dir=build/release-${target}
     runHook postBuild
   '';
 
   installPhase = ''
     runHook preInstall
-    install -Dm755 build/release-penryn/bun $out/bin/bun
+    install -Dm755 build/release-${target}/bun $out/bin/bun
     ln -s bun $out/bin/bunx
     runHook postInstall
   '';
 
   meta = with lib; {
-    description = "Bun JavaScript runtime built for Penryn (pre-SSE4.2 x86_64)";
+    description = {
+      penryn = "Bun JavaScript runtime built for Penryn (pre-SSE4.2 x86_64)";
+      nehalem = "Bun JavaScript runtime built for Nehalem (SSE4.2 + POPCNT, no AVX)";
+      haswell = "Bun JavaScript runtime built for Haswell (AVX2, BMI2)";
+    }.${target};
     homepage = "https://github.com/oven-sh/bun";
     license = licenses.mit;
     platforms = [ "x86_64-linux" ];

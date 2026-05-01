@@ -99,6 +99,8 @@ out.*
 outcss
 outdir
 outdir/
+result
+result-*
 packages/*/*.wasm
 packages/bun-*/*.o
 packages/bun-*/bun
