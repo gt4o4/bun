@@ -874,4 +874,13 @@ extern "C" JSC::EncodedJSValue ZigGlobalObject__readableStreamToBytes(Zig::Globa
 extern "C" JSC::EncodedJSValue ZigGlobalObject__readableStreamToJSON(Zig::GlobalObject* globalObject, JSC::EncodedJSValue readableStreamValue);
 extern "C" JSC::EncodedJSValue ZigGlobalObject__readableStreamToBlob(Zig::GlobalObject* globalObject, JSC::EncodedJSValue readableStreamValue);
 
+// WebKit 4d5e75e's TypeCasts.h requires an explicit TypeCastTraits
+// specialization for every type used with dynamicDowncast<>(). The default
+// primary template static_asserts(false) unless isBaseType is true, and
+// JSGlobalObject → Zig::GlobalObject is a downcast (not a base), so we
+// need to teach the trait how to check.
+SPECIALIZE_TYPE_TRAITS_BEGIN(Zig::GlobalObject)
+    static bool isType(const JSC::JSCell& cell) { return cell.inherits<Zig::GlobalObject>(); }
+SPECIALIZE_TYPE_TRAITS_END()
+
 #endif

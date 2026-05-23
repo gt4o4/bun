@@ -31,11 +31,11 @@ let
   bunSrc = self;
   bunVersion = self.shortRev or self.dirtyShortRev or "dev";
 
-  webkitRev = "4d5e75ebd84a14edbc7ae264245dcd77fe597c10";
+  webkitRev = "5488984d20e0dbfe4be2c3ba8fb18eb81a5e0e8b";
   # Stable zig. Must match scripts/build/zig.ts::ZIG_COMMIT — parallel zig
   # + LTO is pathologically slow on these release-tier builds, so we stay on
   # serial codegen.
-  zigCommit = "365343af4fc5a1a632e6b54aadd0b87be30edd81";
+  zigCommit = "04e7f6ac1e009525bc00934f20199c68f04e0a24";
   nodeVer = "24.3.0";
 
   # Source tarballs for vendored deps. systemDeps come from buildInputs instead.
@@ -54,7 +54,6 @@ let
       hash = "sha256-BC8O/nFHBj/5uhDxo47QgOlJvL0Evb81kriEbdEbHaI=";
       patches = [
         "patches/libarchive/archive_write_add_filter_gzip.c.patch"
-        "patches/libarchive/CMakeLists.txt.patch"
         "patches/libarchive/nonblocking-read.patch"
       ];
     };
@@ -70,13 +69,13 @@ let
       repo = "ls-hpack";
       rev = "8905c024b6d052f083a3d11d0a169b3c2735c8a1";
       hash = "sha256-B9i/kBuxsVVD846r0jk4UZ4SEO6621Lz1lHW7xMO+XM=";
-      patches = [ "patches/lshpack/CMakeLists.txt.patch" ];
+      patches = [ "patches/lshpack/bss-huff-tables.patch" ];
     };
     mimalloc = {
       owner = "oven-sh";
       repo = "mimalloc";
-      rev = "57029fb1f193e633462e76af745599e1dbfd4b58";
-      hash = "sha256-Zjj9765yVD1xaJ2olraAlcESP8u8UXxbfZ4zoxYxf1s=";
+      rev = "f15aecb94fc8096008bf87b90c53ed682026914a";
+      hash = "sha256-2Yt/MV8WuCzUO342p+H3POrpQi+Luo67mYmceKVCd/w=";
       patches = [ ];
     };
     picohttpparser = {
@@ -92,6 +91,41 @@ let
       rev = "12882eee073cfe5c7621bcfadf679e1372d4537b";
       hash = "sha256-a1BIX8u/qQqZxW6OK2qSAU3NNDd9Xtsj4ZONyeyW8Ko=";
       patches = [ "patches/tinycc/tcc.h.patch" ];
+    };
+    libjpeg-turbo = {
+      owner = "libjpeg-turbo";
+      repo = "libjpeg-turbo";
+      rev = "e352b02f794f701407b39af08576035ba3360d60";
+      hash = "sha256-RA86lDkMeOq4j3S5KUTS9rJI5ZLphEEuOJiF37V5a/A=";
+      patches = [ ];
+    };
+    libspng = {
+      owner = "randy408";
+      repo = "libspng";
+      rev = "fb768002d4288590083a476af628e51c3f1d47cd";
+      hash = "sha256-1laBMpDXCnULaedoMj/zs4da34wujC/bTlfKFGer+Go=";
+      patches = [ ];
+    };
+    libwebp = {
+      owner = "webmproject";
+      repo = "libwebp";
+      rev = "b7e29b9d75bd31422b00c2a446d49d7af06c328d";
+      hash = "sha256-dvuJtEVP8hYbsMyiz4MuGbi0ABsO9C+8wrSkN8lFsrY=";
+      patches = [ ];
+    };
+    lsqpack = {
+      owner = "litespeedtech";
+      repo = "ls-qpack";
+      rev = "1e9c5b8e59f8161c54f168a570c8bfdc59ded0c3";
+      hash = "sha256-6dir5bfB41uZCKlSHirNfB0XVHurwB1zxyl+Aq67zC0=";
+      patches = [ ];
+    };
+    lsquic = {
+      owner = "litespeedtech";
+      repo = "lsquic";
+      rev = "3181911301b1aa4f54c1ed690901abc674ee08fb";
+      hash = "sha256-+MuQ+zJ+uRWXwjFjv1lsDRiCVgvjW2Ydm6hIkcxGFzU=";
+      patches = [ ];
     };
   };
 
@@ -129,14 +163,14 @@ let
   webkitSrc = fetchgit {
     url = "https://github.com/oven-sh/WebKit.git";
     rev = webkitRev;
-    hash = "sha256-bnNcqYtX8+3KL/uJW0TPU3MfByToP37S1zuqeWWMfvw=";
+    hash = "sha256-xFxCb5MFJnTw65XDwkq4x+AcKULsmDfj1T+O0cQhOMo=";
     deepClone = true;
     leaveDotGit = false;
   };
 
   zigZip = fetchurl {
     url = "https://github.com/oven-sh/zig/releases/download/autobuild-${zigCommit}/bootstrap-x86_64-linux-musl.zip";
-    hash = "sha256-Baetu5WBFqAUx/qtvfsemQpc6JQRJKkcVI9F0r8NDTg=";
+    hash = "sha256-DAm0TAskMtetinWbaFuorh+IOQKFGsUuKCrWCom+vkI=";
   };
 
   nodeHeaders = fetchurl {
@@ -189,7 +223,7 @@ let
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "bun-${target}";
-  version = "1.3.13-${target}-${bunVersion}";
+  version = "1.3.14-${target}-${bunVersion}";
 
   src = bunSrc;
 
@@ -223,6 +257,16 @@ stdenv.mkDerivation (finalAttrs: {
     libuv
     libhwy # .a-only in nixpkgs; statically linked
   ];
+
+  # lolhtml's -Zbuild-std=std,panic_abort (lolhtml.ts:84) requires nightly
+  # Rust + rust-src. nixpkgs only ships stable rustc. Disable the
+  # immediate-abort path — the only penalty is ~230 KB extra (backtrace code
+  # in the precompiled std's panic handler). The stable -Cpanic=abort path
+  # still fires and the FFI boundary is abort-on-unwind regardless.
+  postPatch = ''
+    substituteInPlace scripts/build/deps/lolhtml.ts \
+      --replace-fail 'cfg.release && canBuildStdImmediateAbort' 'false'
+  '';
 
   dontUseCmakeConfigure = true;
   # Skip every stdenv step that touches the ELF. Ninja already stripped
