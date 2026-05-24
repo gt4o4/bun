@@ -115,30 +115,48 @@ export const libwebp: Dependency = {
   name: "libwebp",
   versionMacro: "LIBWEBP",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "webmproject/libwebp",
-    commit: LIBWEBP_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("libwebp")) {
+      return {
+        kind: "system",
+        commit: LIBWEBP_COMMIT,
+        linkFlags: ["-lwebp", "-lwebpmux", "-lwebpdemux", "-lsharpyuv"],
+        trackLibs: ["webp", "webpmux", "webpdemux", "sharpyuv"],
+      };
+    }
+    return {
+      kind: "github-archive",
+      repo: "webmproject/libwebp",
+      commit: LIBWEBP_COMMIT,
+    };
+  },
 
-  build: cfg => ({
-    kind: "direct",
-    sources: [
-      ...DEC.map(f => `src/dec/${f}.c`),
-      ...ENC.map(f => `src/enc/${f}.c`),
-      ...DSP.map(f => simd(`src/dsp/${f}.c`, cfg.x64)),
-      ...UTILS.map(f => `src/utils/${f}.c`),
-      ...DEMUX.map(f => `src/demux/${f}.c`),
-      ...MUX.map(f => `src/mux/${f}.c`),
-      ...SHARPYUV.map(f => simd(`sharpyuv/${f}.c`, cfg.x64)),
-    ],
-    // src/webp/*.h is the public API; internal headers use "src/..."
-    // includes from the repo root, sharpyuv uses "sharpyuv/...".
-    includes: [".", "src"],
-  }),
+  build: cfg => {
+    if (cfg.systemDeps.has("libwebp")) {
+      return { kind: "none" };
+    }
+    return {
+      kind: "direct",
+      sources: [
+        ...DEC.map(f => `src/dec/${f}.c`),
+        ...ENC.map(f => `src/enc/${f}.c`),
+        ...DSP.map(f => simd(`src/dsp/${f}.c`, cfg.x64)),
+        ...UTILS.map(f => `src/utils/${f}.c`),
+        ...DEMUX.map(f => `src/demux/${f}.c`),
+        ...MUX.map(f => `src/mux/${f}.c`),
+        ...SHARPYUV.map(f => simd(`sharpyuv/${f}.c`, cfg.x64)),
+      ],
+      includes: [".", "src"],
+    };
+  },
 
-  provides: () => ({
-    libs: [],
-    includes: ["src"],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("libwebp")) {
+      return { libs: [], includes: [] };
+    }
+    return {
+      libs: [],
+      includes: ["src"],
+    };
+  },
 };
