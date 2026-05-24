@@ -158,7 +158,7 @@ export const profiles = {
     // Skipped: boringssl/mimalloc/tinycc (oven-sh forks), libarchive/
     // lolhtml/lshpack (load-bearing patches), picohttpparser (single-source
     // direct compile, nothing to swap).
-    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv", "highway"],
+    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv", "highway", "libspng", "libwebp", "libjpeg-turbo"],
   },
 
   /**
@@ -182,7 +182,7 @@ export const profiles = {
     x64Cpu: "nehalem",
     lto: true,
     dynamicLibstdcxx: true,
-    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv", "highway"],
+    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv", "highway", "libspng", "libwebp", "libjpeg-turbo"],
   },
 
   /**
@@ -199,7 +199,7 @@ export const profiles = {
     x64Cpu: "haswell",
     lto: true,
     dynamicLibstdcxx: true,
-    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv", "highway"],
+    systemDeps: ["zstd", "brotli", "libdeflate", "cares", "zlib", "hdrhistogram", "libuv", "highway", "libspng", "libwebp", "libjpeg-turbo"],
   },
 
   /**

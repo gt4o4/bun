@@ -72,15 +72,28 @@ export const libjpegTurbo: Dependency = {
   name: "libjpeg-turbo",
   versionMacro: "LIBJPEG_TURBO",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "libjpeg-turbo/libjpeg-turbo",
-    commit: LIBJPEG_TURBO_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("libjpeg-turbo")) {
+      return {
+        kind: "system",
+        commit: LIBJPEG_TURBO_COMMIT,
+        linkFlags: ["-lturbojpeg", "-ljpeg"],
+        trackLibs: ["turbojpeg", "jpeg"],
+      };
+    }
+    return {
+      kind: "github-archive",
+      repo: "libjpeg-turbo/libjpeg-turbo",
+      commit: LIBJPEG_TURBO_COMMIT,
+    };
+  },
 
   patches: ["patches/libjpeg-turbo/8bit-only.patch", "patches/libjpeg-turbo/jbun_stubs.c"],
 
   build: cfg => {
+    if (cfg.systemDeps.has("libjpeg-turbo")) {
+      return { kind: "none" };
+    }
     const simd = cfg.arm64; // x64 NASM path TODO
     const withSimd: [string, string] = [
       "#cmakedefine WITH_SIMD 1",
@@ -144,11 +157,13 @@ export const libjpegTurbo: Dependency = {
     };
   },
 
-  provides: cfg => ({
-    libs: [],
-    // Public header is <turbojpeg.h> in src/; jconfig.h is generated into the
-    // build dir, and jpeglib.h (included by turbojpeg.c callers that want the
-    // low-level API) needs it.
-    includes: ["src", depBuildDir(cfg, "libjpeg-turbo")],
-  }),
+  provides: cfg => {
+    if (cfg.systemDeps.has("libjpeg-turbo")) {
+      return { libs: [], includes: [] };
+    }
+    return {
+      libs: [],
+      includes: ["src", depBuildDir(cfg, "libjpeg-turbo")],
+    };
+  },
 };

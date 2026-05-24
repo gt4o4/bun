@@ -25,6 +25,9 @@
   hdrhistogram_c,
   libuv,
   libhwy,
+  libspng,
+  libwebp,
+  libjpeg,
 }:
 
 let
@@ -91,27 +94,6 @@ let
       rev = "12882eee073cfe5c7621bcfadf679e1372d4537b";
       hash = "sha256-a1BIX8u/qQqZxW6OK2qSAU3NNDd9Xtsj4ZONyeyW8Ko=";
       patches = [ "patches/tinycc/tcc.h.patch" ];
-    };
-    libjpeg-turbo = {
-      owner = "libjpeg-turbo";
-      repo = "libjpeg-turbo";
-      rev = "e352b02f794f701407b39af08576035ba3360d60";
-      hash = "sha256-RA86lDkMeOq4j3S5KUTS9rJI5ZLphEEuOJiF37V5a/A=";
-      patches = [ ];
-    };
-    libspng = {
-      owner = "randy408";
-      repo = "libspng";
-      rev = "fb768002d4288590083a476af628e51c3f1d47cd";
-      hash = "sha256-1laBMpDXCnULaedoMj/zs4da34wujC/bTlfKFGer+Go=";
-      patches = [ ];
-    };
-    libwebp = {
-      owner = "webmproject";
-      repo = "libwebp";
-      rev = "b7e29b9d75bd31422b00c2a446d49d7af06c328d";
-      hash = "sha256-dvuJtEVP8hYbsMyiz4MuGbi0ABsO9C+8wrSkN8lFsrY=";
-      patches = [ ];
     };
     lsqpack = {
       owner = "litespeedtech";
@@ -256,6 +238,9 @@ stdenv.mkDerivation (finalAttrs: {
     hdrhistogram_c
     libuv
     libhwy # .a-only in nixpkgs; statically linked
+    libspng
+    libwebp
+    libjpeg # nixpkgs alias for libjpeg-turbo; provides turbojpeg.h + libturbojpeg.so
   ];
 
   # lolhtml's -Zbuild-std=std,panic_abort (lolhtml.ts:84) requires nightly

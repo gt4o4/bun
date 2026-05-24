@@ -248,6 +248,12 @@
             ];
             doCheck = false;
           });
+          libjpeg = pkgs.libjpeg.override { stdenv = compatStdenv; };
+          libspng = pkgs.libspng.override { stdenv = compatStdenv; };
+          libwebp = pkgs.libwebp.override {
+            stdenv = compatStdenv;
+            libjpeg = pkgs.libjpeg.override { stdenv = compatStdenv; };
+          };
         };
 
         mkBunTarget =
