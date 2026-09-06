@@ -297,6 +297,130 @@ If you are using a JSC debug build and using VScode, make sure to run the `C/C++
 
 Note that if you make changes to our [WebKit fork](https://github.com/oven-sh/WebKit), you will also have to change `WEBKIT_VERSION` in [`scripts/build/deps/webkit.ts`](/scripts/build/deps/webkit.ts) to point to your commit hash or release tag.
 
+## Building the release tiers (Penryn / Nehalem / Haswell)
+
+Upstream ships one x64 binary, targeting Nehalem (SSE4.2). This fork adds three
+`release-<tier>` profiles — `release-penryn` (SSE4.1 only: late Core 2 Duo,
+early Atoms), `release-nehalem` (upstream's tier) and `release-haswell`
+(AVX2 + BMI2) — meant to be built under the Nix flake's compat stdenv so the
+binary's glibc floor stays at 2.34 (RHEL 9 / Ubuntu 22.04+). No prebuilt
+artifact is shipped from upstream for any of them.
+
+### Using the Nix derivation
+
+```sh
+# From a flake that locks this one as an input (this repo ships no flake.lock
+# on purpose — the consumer pins nixpkgs, nixpkgs-compat and fenix):
+nix build --override-input bun "git+file://$PWD/submodules/bun?ref=main" .#bun-haswell
+./result/bin/bun --version
+```
+
+The derivation lives at [`nix/bun-target.nix`](/nix/bun-target.nix) and pins
+every input: WebKit (`WEBKIT_VERSION`), the node headers, the vendored dep
+tarballs (exposed to the build scripts through `BUN_BUILD_PREFETCH_DIR`), the
+whole crates.io graph from `Cargo.lock` (`rustPlatform.importCargoLock`) and
+the exact nightly from `rust-toolchain.toml` (via fenix). Network is only
+needed for one fixed-output derivation that runs `bun install
+--frozen-lockfile`. Everything else is hermetic.
+
+### Manual build
+
+```sh
+# 1. Clone WebKit at the pinned commit (no prebuilt exists below nehalem, and
+#    the tiers build WebKit with their own -march anyway)
+git clone https://github.com/oven-sh/WebKit vendor/WebKit
+git -C vendor/WebKit checkout <commit_hash>   # see WEBKIT_VERSION in scripts/build/deps/webkit.ts
+
+# 2. Build — sets -march=<tier> for bun + all deps + the local WebKit,
+#    -Ctarget-cpu=<tier> for the Rust half
+bun run build --profile=release-penryn --build-dir=build/release-penryn
+```
+
+The system libraries below (their `-dev` packages) must be installed: in
+`systemDeps` mode the deps are linked with `-l<name>` from the toolchain's
+default search path and their headers resolve from the default include path.
+
+### What the profiles do
+
+- `x64Cpu: "<tier>"` → `-march=<tier>` for bun's own C/C++, every vendored dep
+  that still builds from source, and the nested WebKit cmake invocation;
+  `rustCpuTargetFlags()` derives the matching `-Ctarget-cpu=` from the same
+  table, so the two halves cannot drift apart.
+- `lto: true` — C++ `-flto=thin`, Rust fat LTO via the workspace profile.
+  Required: without it `scripts/build/deps/webkit.ts` silently downgrades the
+  nested WebKit build to `RelWithDebInfo` (no `-O3`).
+- `crossLangLto: false` — rustc's bundled LLVM is newer than clang 21's, so
+  cross-language LTO would swap the link to bare `rust-lld` and bypass the
+  rpath-injecting `ld` wrapper the Nix build relies on. Both halves still LTO
+  on their own; only the cross-language inlining is lost.
+- `buildStd: false` — no `-Zbuild-std`: a sandboxed build would otherwise have
+  to vendor rust-src's own crate graph for ~200 KB of std symbolizer.
+- `dynamicLibstdcxx: true` — `-lstdc++ -lgcc_s` instead of the static copies;
+  the compat host's libstdc++ is the target ABI.
+- `systemDeps`: zstd, brotli, libdeflate, zlib, hdrhistogram, highway, libspng,
+  libwebp, libjpeg-turbo. Each switches its `source()` to `kind: "system"`, so
+  the profile links it from the host's package manager (nixpkgs in the Nix
+  path) instead of bundling it statically — shared-library pages dedup across
+  the several bun processes these boxes run. Still vendored: boringssl,
+  mimalloc, tinycc (oven-sh forks), libarchive, lol-html, ls-hpack (load-bearing
+  patches), ls-qpack, lsquic, picohttpparser, and since 1.4.x c-ares (upstream
+  patches it: `patches/cares/accept-rdata-compression.patch`). libuv is not
+  linked on Linux at all upstream.
+- `smokeTest: false` on the sub-native tiers (penryn, nehalem): the binary is
+  validated on the deployed machine or under qemu instead.
+
+### Runtime requirements (manual / non-Nix builds)
+
+The tier binaries dynamically link against:
+
+```
+libstdc++.so.6, libgcc_s.so.1
+libicui18n.so.<N>, libicuuc.so.<N>   # the ICU the WebKit build saw (71 in the Nix build)
+libz.so.1
+libzstd.so.1
+libbrotlidec.so.1, libbrotlienc.so.1
+libdeflate.so.0
+libhdr_histogram.so.6
+libspng.so.0
+libturbojpeg.so.0
+libwebp.so.7, libwebpmux.so.3, libwebpdemux.so.2
+libc.so.6, libm.so.6   # glibc ≥ 2.34 (compat stdenv)
+```
+
+libhwy is static-only in nixpkgs and is linked in. Under Nix the consumer
+(`bun-compat.nix` in nix-configs) resolves all of these with autoPatchelf;
+on an FHS distro also swap the interpreter:
+`patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 bun`.
+
+### Runtime caveats
+
+JSC's runtime CPU dispatch handles SSE4.2/AVX/AVX2 fallbacks for plain
+JavaScript across all four JIT tiers. Two narrow code paths still emit
+post-Penryn instructions unconditionally and will SIGILL if exercised:
+
+| Code path                      | Symbol(s)                                      | Op emitted                              | Impact                                                 |
+| ------------------------------ | ---------------------------------------------- | --------------------------------------- | ------------------------------------------------------ |
+| WASM v128 SIMD opcodes         | `ipint_simd_*` (LLInt)                         | `vpshufb`, `vroundps`, `vroundpd` (AVX) | penryn + nehalem: guest module using v128 SIMD SIGILLs |
+| WASM `i{32,64}.popcnt` opcodes | `ipint_i32_popcnt`, `ipint_i64_popcnt` (LLInt) | native `popcntq`                        | penryn only                                            |
+
+Plain JS, Bun APIs and WASM modules that don't use those opcodes all work.
+PCLMUL and POPCNT also appear elsewhere in the binary (zlib-ng's CRC32,
+simdutf's `westmere` kernel) but those are runtime-dispatched.
+
+### Verifying the binary
+
+```sh
+# Confirm system-linked deps resolve at runtime:
+ldd build/release-penryn/bun | grep -E 'libz|libzstd|libbrotli|libicu|libhdr|libspng|libwebp|libturbojpeg'
+
+# Run on emulated Penryn / Nehalem:
+qemu-x86_64 -cpu Penryn build/release-penryn/bun -e 'console.log(Bun.version)'
+qemu-x86_64 -cpu Nehalem build/release-nehalem/bun -e 'console.log(Bun.version)'
+
+# Pin the floor: -cpu Conroe (no SSE4.1) should SIGILL the penryn binary:
+qemu-x86_64 -cpu Conroe build/release-penryn/bun -e 'console.log(Bun.version)'
+```
+
 ## Troubleshooting
 
 ### 'span' file not found on Ubuntu
