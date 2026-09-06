@@ -89,11 +89,22 @@ const cmakedefine = (truthy: boolean): [string, string] => ["#cmakedefine", trut
 export const libjpegTurbo: Dependency = {
   name: "libjpeg-turbo",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "libjpeg-turbo/libjpeg-turbo",
-    commit: LIBJPEG_TURBO_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("libjpeg-turbo")) {
+      // <turbojpeg.h> / <jpeglib.h> resolve from the toolchain default include path.
+      return {
+        kind: "system",
+        commit: LIBJPEG_TURBO_COMMIT,
+        linkFlags: ["-lturbojpeg", "-ljpeg"],
+        trackLibs: ["turbojpeg", "jpeg"],
+      };
+    }
+    return {
+      kind: "github-archive",
+      repo: "libjpeg-turbo/libjpeg-turbo",
+      commit: LIBJPEG_TURBO_COMMIT,
+    };
+  },
 
   patches: ["patches/libjpeg-turbo/8bit-only.patch", "patches/libjpeg-turbo/jbun_stubs.c"],
 

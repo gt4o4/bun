@@ -232,6 +232,12 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   // compiled source files (deps like picohttpparser that provide .c files
   // instead of a .a — we compile those alongside bun's own sources).
   const depLibs: string[] = [];
+  // Free-form linker flags from system deps (-lzstd etc.). Goes in $ldflags,
+  // not $in. Tracked separately so depLibs stays "files ninja can stat".
+  const depLinkFlags: string[] = [];
+  // Resolved system .so paths for the link rule's implicitInputs — relink
+  // when a Nix store path bumps. Empty for source-built deps.
+  const depTrackedLibFiles: string[] = [];
   const depObjects: string[] = [];
   const depIncludes: string[] = [];
   const depDefines: string[] = [];
@@ -248,6 +254,8 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   const depChecks: string[] = [];
   for (const d of deps) {
     depLibs.push(...d.libs);
+    depLinkFlags.push(...(d.linkFlags ?? []));
+    depTrackedLibFiles.push(...(d.trackedLibFiles ?? []));
     depObjects.push(...d.objects);
     depChecks.push(...d.checks);
     depIncludes.push(...d.includes);
@@ -505,11 +513,15 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   // wrapping helper.
   const shims = emitShims(n, cfg);
   const linkObjects = [...(archive !== undefined ? [archive] : allObjects), ...rustObjects, ...windowsRes];
-  const ldflags = [...flags.ldflags, ...systemLibs(cfg), ...shims.ldflags];
+  // depLinkFlags goes BEFORE systemLibs(cfg): static linking is left-to-right
+  // (a later -l can resolve an earlier archive's unresolved symbol) and
+  // `allDeps` is ordered providers-after-users; systemLibs is the OS runtime
+  // (-lc, -lpthread) every dep ultimately needs, so it belongs at the end.
+  const ldflags = [...flags.ldflags, ...depLinkFlags, ...systemLibs(cfg), ...shims.ldflags];
   const exe = link(n, cfg, exeName, linkObjects, {
     libs: depLibs,
     flags: ldflags,
-    implicitInputs: [...linkImplicitInputs(cfg), ...shims.implicitInputs, ...depChecks],
+    implicitInputs: [...linkImplicitInputs(cfg), ...shims.implicitInputs, ...depChecks, ...depTrackedLibFiles],
     // Declare the maps the release link writes as side-products (`perf`
     // symbolication on linux; the order file tracer's symbol table on windows).
     linkerMapOutputs: linkerMapOutputs(cfg),
@@ -796,7 +808,10 @@ export function emitPostLink(
   // ASAN binaries to run from subprocesses (shadow memory layout conflict
   // with ELF_ET_DYN_BASE, see sanitizers/856). We try with setarch first,
   // fall back to direct invocation.
-  emitSmokeTest(n, cfg, exe, exeName, strippedExe);
+  // Skipped when cfg.smokeTest is off (Nix sub-native release tiers): the
+  // binary is validated on the deployed machine / under qemu instead, and
+  // configure.ts drops the `check` phony from the defaults to match.
+  if (cfg.smokeTest) emitSmokeTest(n, cfg, exe, exeName, strippedExe);
 
   return { strippedExe, dsym };
 }

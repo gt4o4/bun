@@ -352,7 +352,9 @@ export async function configure(input: ConfigureInput): Promise<ConfigureResult>
   // auto-trigger).
   if (output.exe !== undefined) {
     const defaultTarget = output.strippedExe !== undefined ? n.rel(output.strippedExe) : "bun";
-    const targets = [defaultTarget, "check"];
+    const targets = [defaultTarget];
+    // emitBun only emits the smoke-test `check` phony when cfg.smokeTest.
+    if (cfg.smokeTest) targets.push("check");
     if (output.dsym !== undefined) targets.push(n.rel(output.dsym));
     for (const stamp of output.uploadStamps ?? []) targets.push(n.rel(stamp));
     n.default(targets);

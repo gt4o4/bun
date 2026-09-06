@@ -114,11 +114,22 @@ function simd(path: string, x64: boolean) {
 export const libwebp: Dependency = {
   name: "libwebp",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "webmproject/libwebp",
-    commit: LIBWEBP_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("libwebp")) {
+      // <webp/*.h> resolve from the toolchain default include path.
+      return {
+        kind: "system",
+        commit: LIBWEBP_COMMIT,
+        linkFlags: ["-lwebp", "-lwebpmux", "-lwebpdemux", "-lsharpyuv"],
+        trackLibs: ["webp", "webpmux", "webpdemux", "sharpyuv"],
+      };
+    }
+    return {
+      kind: "github-archive",
+      repo: "webmproject/libwebp",
+      commit: LIBWEBP_COMMIT,
+    };
+  },
 
   build: cfg => ({
     kind: "direct",

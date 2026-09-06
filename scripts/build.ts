@@ -434,6 +434,10 @@ function parseArgs(argv: string[]): CliArgs {
   // notice typos.
   const boolFields = new Set([
     "lto",
+    "crossLangLto",
+    "buildStd",
+    "dynamicLibstdcxx",
+    "smokeTest",
     "asan",
     "assertions",
     "logs",
@@ -459,6 +463,7 @@ function parseArgs(argv: string[]): CliArgs {
     "buildType",
     "mode",
     "webkit",
+    "x64Cpu",
     "localDeps",
     "packageManager",
     "buildDir",

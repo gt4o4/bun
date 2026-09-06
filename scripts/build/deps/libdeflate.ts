@@ -15,11 +15,17 @@ export const libdeflate: Dependency = {
   name: "libdeflate",
   versionMacro: "LIBDEFLATE_HASH",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "ebiggers/libdeflate",
-    commit: LIBDEFLATE_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("libdeflate")) {
+      // <libdeflate.h> resolves from the toolchain default include path.
+      return { kind: "system", commit: LIBDEFLATE_COMMIT, linkFlags: ["-ldeflate"], trackLibs: ["deflate"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "ebiggers/libdeflate",
+      commit: LIBDEFLATE_COMMIT,
+    };
+  },
 
   build: () => ({
     kind: "direct",

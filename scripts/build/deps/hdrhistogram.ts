@@ -15,11 +15,23 @@ const HDRHISTOGRAM_COMMIT = "be60a9987ee48d0abf0d7b6a175bad8d6c1585d1";
 export const hdrhistogram: Dependency = {
   name: "hdrhistogram",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "HdrHistogram/HdrHistogram_c",
-    commit: HDRHISTOGRAM_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("hdrhistogram")) {
+      // nixpkgs ships hdrhistogram_c from THIS exact commit. <hdr/hdr_histogram.h>
+      // resolves from the toolchain default include path; .so is libhdr_histogram.so.6.
+      return {
+        kind: "system",
+        commit: HDRHISTOGRAM_COMMIT,
+        linkFlags: ["-lhdr_histogram"],
+        trackLibs: ["hdr_histogram"],
+      };
+    }
+    return {
+      kind: "github-archive",
+      repo: "HdrHistogram/HdrHistogram_c",
+      commit: HDRHISTOGRAM_COMMIT,
+    };
+  },
 
   patches: ["patches/hdrhistogram/bitscan-type.patch"],
 

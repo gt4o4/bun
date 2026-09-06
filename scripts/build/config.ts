@@ -126,6 +126,14 @@ export interface Config {
    * entirely — see workarounds.ts "globalopt-crash-aarch64-musl".
    */
   crossLangLto: boolean;
+  /**
+   * Rebuild std from source (`-Zbuild-std`). Defaults to `release || asan`
+   * (see rust.ts for why); Tier-3 targets always do it regardless. The Nix
+   * release tiers set it false: a sandboxed build would have to vendor
+   * rust-src's own crate graph on top of the workspace lock, for ~200 KB
+   * of std symbolizer and a std without `-Ctarget-cpu`.
+   */
+  buildStd: boolean;
   /** IR PGO: directory for .profraw output (instrumented build). Mutually exclusive with pgoUse. */
   pgoGenerate: string | undefined;
   /** IR PGO: .profdata file path (optimized build). Mutually exclusive with pgoGenerate. */
@@ -133,13 +141,37 @@ export interface Config {
   asan: boolean;
   assertions: boolean;
   logs: boolean;
-  /** x64-only: target nehalem (no AVX). Default true on x64 — the only x64 build we ship. */
+  /** x64-only: target nehalem (no AVX). Derived from `x64Cpu !== "haswell"`. */
   baseline: boolean;
+  /**
+   * x64-only target tier:
+   *   "nehalem" = default on x64 (`baseline`; SSE4.2 + POPCNT, no AVX) — the
+   *               only x64 build upstream ships.
+   *   "haswell" = AVX2, BMI2 (upstream's old non-baseline default).
+   *   "penryn"  = pre-SSE4.2 (SSE4.1 only) — local WebKit build only,
+   *               no prebuilt tarballs exist. WebAssembly SIMD (v128) is
+   *               unsupported at runtime on this tier (LLInt emits AVX).
+   */
+  x64Cpu: "haswell" | "nehalem" | "penryn";
   canary: boolean;
   /** MinSizeRel → optimize for size. */
   smol: boolean;
   staticSqlite: boolean;
   staticLibatomic: boolean;
+  /**
+   * Link libstdc++ / libgcc dynamically against the host instead of
+   * embedding static copies. Set on the release-<tier> profiles whose
+   * compat-stdenv build environment matches their target glibc floor —
+   * the host's libstdc++ ABI is already known compatible. Saves ~5 MB
+   * binary size and lets distro security updates propagate.
+   */
+  dynamicLibstdcxx: boolean;
+  /**
+   * Run the post-link smoke test (`bun --version` etc.) and emit the `check`
+   * phony. Default on. The Nix sub-native release tiers turn it off: the
+   * binary is validated on the deployed machine / under qemu instead.
+   */
+  smokeTest: boolean;
   tinycc: boolean;
   valgrind: boolean;
   fuzzilli: boolean;
@@ -322,6 +354,15 @@ export interface Config {
   nodejsV8Version: string;
   /** WebKit commit. Default in versions.ts; override to test a WebKit branch. */
   webkitVersion: string;
+
+  /**
+   * Names of vendored deps to link from the system instead of building from
+   * source. Each name must match the corresponding `Dependency.name` and
+   * that dep's `source()` must branch on `cfg.systemDeps.has(name)` to
+   * return a `kind: "system"` Source. Profiles set this. Empty by default —
+   * every dep stays vendored.
+   */
+  systemDeps: ReadonlySet<string>;
 }
 
 /**
@@ -335,15 +376,20 @@ export interface PartialConfig {
   buildType?: BuildType;
   mode?: BuildMode;
   lto?: boolean;
+  crossLangLto?: boolean;
+  buildStd?: boolean;
   pgoGenerate?: string;
   pgoUse?: string;
   asan?: boolean;
   assertions?: boolean;
   logs?: boolean;
   baseline?: boolean;
+  x64Cpu?: "haswell" | "nehalem" | "penryn";
   canary?: boolean;
   staticSqlite?: boolean;
   staticLibatomic?: boolean;
+  dynamicLibstdcxx?: boolean;
+  smokeTest?: boolean;
   tinycc?: boolean;
   valgrind?: boolean;
   fuzzilli?: boolean;
@@ -394,6 +440,11 @@ export interface PartialConfig {
   nodejsAbiVersion?: string;
   nodejsV8Version?: string;
   webkitVersion?: string;
+  /**
+   * Dep names to link from the system. Profiles or other config sources can
+   * use this to opt deps into `kind: "system"` mode.
+   */
+  systemDeps?: readonly string[];
 }
 
 /**
@@ -818,7 +869,10 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
   // newer-LLVM bitcode rustc emits under -Clinker-plugin-lto is readable at
   // link time. Windows cross does the same with the `gcc-ld/lld-link`
   // sibling (COFF flavor) — see the wantRustLld swap below.
-  const crossLangLto = lto && !(windows && host.os === "windows");
+  // `crossLangLto` may be pinned off by a profile: the Nix release tiers do,
+  // because the rust-lld swap below hands the link to a bare linker that
+  // bypasses their rpath-injecting `ld` wrapper.
+  const crossLangLto = partial.crossLangLto ?? (lto && !(windows && host.os === "windows"));
 
   // Cross-language LTO bitcode-version skew: `-Clinker-plugin-lto` makes
   // rustc emit raw LLVM bitcode into libbun_runtime.a. LLVM bitcode is
@@ -872,7 +926,11 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
   // Logs: on by default in debug non-test
   const logs = partial.logs ?? debug;
 
-  const baseline = partial.baseline ?? x64;
+  // x64Cpu is the source of truth; `baseline` is derived. Only `baseline`
+  // given (legacy CLI): true → nehalem, false → haswell. Nothing given on
+  // x64 → nehalem, upstream's one shipped x64 tier.
+  const x64Cpu = partial.x64Cpu ?? (x64 && (partial.baseline ?? true) ? "nehalem" : "haswell");
+  const baseline = x64Cpu !== "haswell";
   const canary = partial.canary ?? true;
   const canaryRevision = canary ? "1" : "0";
 
@@ -887,6 +945,11 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
   // those users pass --static-libatomic=off. Not auto-detected: the link
   // failure is loud ("cannot find -l:libatomic.a") and the fix is obvious.
   const staticLibatomic = partial.staticLibatomic ?? true;
+
+  // Default off: standard release/debug builds embed libstdc++ statically
+  // so they don't depend on the host's C++ runtime. Compat-stdenv release
+  // tiers (release-penryn/-nehalem/-haswell) opt in via their profile.
+  const dynamicLibstdcxx = partial.dynamicLibstdcxx ?? false;
 
   // TinyCC: off on Android (no upstream bionic support; FFI cc() falls back
   // to dlopen-only) and FreeBSD (oven-sh/tinycc has no FreeBSD target).
@@ -933,6 +996,12 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
 
   // ─── Validation ───
   assert(!baseline || x64, "baseline=true requires arch=x64 (baseline disables AVX which is x64-only)");
+  assert(x64Cpu === "haswell" || x64, "x64Cpu requires arch=x64 (sub-haswell tiers are x64-only)");
+  // No prebuilt WebKit exists below nehalem; force --webkit=local for penryn.
+  assert(
+    x64Cpu !== "penryn" || partial.webkit === "local",
+    "x64Cpu=penryn requires --webkit=local (no prebuilt WebKit tarballs below nehalem; clone oven-sh/WebKit to vendor/WebKit/)",
+  );
   assert(!valgrind || linux, "valgrind=true requires os=linux");
   assert(!(asan && valgrind), "Cannot enable both asan and valgrind simultaneously");
   assert(os !== "linux" || abi !== undefined, "Linux builds require an abi (gnu, musl, or android)");
@@ -1193,16 +1262,20 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     mode: partial.mode ?? "full",
     lto,
     crossLangLto,
+    buildStd: partial.buildStd ?? (release || asan),
     pgoGenerate,
     pgoUse,
     asan,
     assertions,
     logs,
     baseline,
+    x64Cpu,
     canary,
     smol,
     staticSqlite,
     staticLibatomic,
+    dynamicLibstdcxx,
+    smokeTest: partial.smokeTest ?? true,
     tinycc,
     valgrind,
     fuzzilli,
@@ -1281,6 +1354,8 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     nodejsAbiVersion,
     canaryRevision,
     webkitVersion,
+    // Defensive copy: profiles + CLI may hand us a readonly array literal.
+    systemDeps: new Set(partial.systemDeps ?? []),
   };
 }
 
@@ -1574,7 +1649,13 @@ export function formatConfig(cfg: Config, exe: string): string {
   if (cfg.asan) features.push("asan");
   if (cfg.assertions) features.push("assertions");
   if (cfg.logs) features.push("logs");
-  if (cfg.baseline) features.push("baseline");
+  if (cfg.x64Cpu === "penryn") features.push("x64-cpu:penryn");
+  else if (cfg.baseline) features.push("baseline");
+  if (cfg.lto && !cfg.crossLangLto) features.push("cross-lang-lto:off");
+  if ((cfg.release || cfg.asan) && !cfg.buildStd) features.push("build-std:off");
+  if (cfg.dynamicLibstdcxx) features.push("dynamic-libstdc++");
+  if (!cfg.smokeTest) features.push("smoke-test:off");
+  if (cfg.systemDeps.size > 0) features.push(`system-deps:${[...cfg.systemDeps].join(",")}`);
   if (cfg.valgrind) features.push("valgrind");
   if (cfg.fuzzilli) features.push("fuzzilli");
   if (cfg.socketFaultInjection !== cfg.asan) {
