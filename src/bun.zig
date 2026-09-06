@@ -3500,6 +3500,10 @@ pub fn getTotalMemorySize() usize {
 }
 
 pub const bytecode_extension = ".jsc";
+/// Sidecar next to a `// @bun @bytecode` ESM source carrying its serialized
+/// ModuleInfo (import/export/declaration record), so the runtime can build the
+/// module record without parsing — emitted by `bun build --already-bundled`.
+pub const module_info_extension = ".modinfo";
 
 /// An typed index into an array or other structure.
 /// maxInt is reserved for an empty state.

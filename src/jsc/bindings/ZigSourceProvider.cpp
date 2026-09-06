@@ -195,6 +195,13 @@ static JSC::VM& getVMForBytecodeCache()
     return *vmForBytecodeCache;
 }
 
+// Shared with BunAnalyzeTranspiledModule.cpp's module_info generator for
+// `bun build --already-bundled`, which analyzes ESM on the same VM.
+extern "C" JSC::VM* Bun__vmForBytecodeCache()
+{
+    return &getVMForBytecodeCache();
+}
+
 extern "C" bool generateCachedModuleByteCodeFromSourceCode(BunString* sourceProviderURL, const Latin1Character* inputSourceCode, size_t inputSourceCodeSize, const uint8_t** outputByteCode, size_t* outputByteCodeSize, JSC::CachedBytecode** cachedBytecodePtr)
 {
     std::span<const Latin1Character> sourceCodeSpan(inputSourceCode, inputSourceCodeSize);

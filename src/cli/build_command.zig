@@ -848,6 +848,7 @@ fn execAlreadyBundled(ctx: Command.Context) !void {
 
     var js_path_buf: bun.PathBuffer = undefined;
     var jsc_path_buf: bun.PathBuffer = undefined;
+    var mi_path_buf: bun.PathBuffer = undefined;
 
     for (entry_points) |entry_point| {
         const source = switch (bun.sys.File.readFrom(bun.FD.cwd(), entry_point, bun.default_allocator)) {
@@ -921,6 +922,34 @@ fn execAlreadyBundled(ctx: Command.Context) !void {
 
         Output.prettyln("  <green>{s}<r>  <d>{f}<r>", .{ out_js_path, bun.fmt.size(source.len, .{ .space_between_number_and_unit = true }) });
         Output.prettyln("  <green>{s}<r>  <d>{f}<r>", .{ jsc_path, bun.fmt.size(bytecode.len, .{ .space_between_number_and_unit = true }) });
+
+        // ESM: also emit the module_info sidecar — the import/export/declaration
+        // record, analyzed by JSC from these exact bytes — so the runtime can
+        // build the module record without parsing: the other half of what a
+        // --compile binary gets.  CJS has no module record and needs none.
+        if (opts.output_format == .esm) {
+            const module_info = bun.jsc.CachedBytecode.generateModuleInfoForESM(&source_provider_url, source, bun.default_allocator) orelse {
+                Output.errGeneric("failed to analyze {s} for module_info (not valid ESM?)", .{entry_point});
+                Global.exit(1);
+            };
+            defer bun.default_allocator.free(module_info);
+            if (out_js_path.len + bun.module_info_extension.len >= mi_path_buf.len) {
+                Output.errGeneric("output path too long: {s}", .{out_js_path});
+                Global.exit(1);
+            }
+            @memcpy(mi_path_buf[0..out_js_path.len], out_js_path);
+            @memcpy(mi_path_buf[out_js_path.len..][0..bun.module_info_extension.len], bun.module_info_extension);
+            mi_path_buf[out_js_path.len + bun.module_info_extension.len] = 0;
+            const mi_path: [:0]const u8 = mi_path_buf[0 .. out_js_path.len + bun.module_info_extension.len :0];
+            switch (bun.sys.File.writeFile(bun.FD.cwd(), mi_path, module_info)) {
+                .result => {},
+                .err => |err| {
+                    Output.errGeneric("failed to write {s}: {s}", .{ mi_path, @tagName(err.getErrno()) });
+                    Global.exit(1);
+                },
+            }
+            Output.prettyln("  <green>{s}<r>  <d>{f}<r>", .{ mi_path, bun.fmt.size(module_info.len, .{ .space_between_number_and_unit = true }) });
+        }
     }
 
     Output.flush();

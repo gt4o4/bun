@@ -11,6 +11,10 @@ pub const ParseResult = struct {
     loader: options.Loader,
     ast: js_ast.Ast,
     already_bundled: AlreadyBundled = .none,
+    /// module_info sidecar found next to a `// @bun @bytecode` ESM source (see
+    /// bun.module_info_extension); lets the runtime skip the module-analysis
+    /// parse the way the standalone graph's embedded module_info does.
+    already_bundled_module_info: ?*analyze_transpiled_module.ModuleInfoDeserialized = null,
     input_fd: ?FD = null,
     empty: bool = false,
     pending_imports: _resolver.PendingResolution.List = .{},
@@ -963,9 +967,9 @@ pub const Transpiler = struct {
                         .loader = loader,
                         .input_fd = input_fd,
                     },
-                    .already_bundled => |already_bundled| .{
-                        .ast = undefined,
-                        .already_bundled = switch (already_bundled) {
+                    .already_bundled => |already_bundled| brk_ab: {
+                        var module_info: ?*analyze_transpiled_module.ModuleInfoDeserialized = null;
+                        const ab: ParseResult.AlreadyBundled = switch (already_bundled) {
                             .bun => .source_code,
                             .bun_cjs => .source_code_cjs,
                             .bytecode_cjs, .bytecode => brk: {
@@ -974,18 +978,36 @@ pub const Transpiler = struct {
                                     var path_buf2: bun.PathBuffer = undefined;
                                     @memcpy(path_buf2[0..path.text.len], path.text);
                                     path_buf2[path.text.len..][0..bun.bytecode_extension.len].* = bun.bytecode_extension.*;
-                                    const bytecode = bun.sys.File.toSourceAt(dirname_fd.unwrapValid() orelse bun.FD.cwd(), path_buf2[0 .. path.text.len + bun.bytecode_extension.len], bun.default_allocator, .{}).asValue() orelse break :brk default_value;
+                                    const dir_fd = dirname_fd.unwrapValid() orelse bun.FD.cwd();
+                                    const bytecode = bun.sys.File.toSourceAt(dir_fd, path_buf2[0 .. path.text.len + bun.bytecode_extension.len], bun.default_allocator, .{}).asValue() orelse break :brk default_value;
                                     if (bytecode.contents.len == 0) {
                                         break :brk default_value;
+                                    }
+                                    if (already_bundled == .bytecode) {
+                                        // ESM: a module_info sidecar (`bun build --already-bundled
+                                        // --format=esm`) lets JSC skip the module-analysis parse
+                                        // too — the same record the standalone graph embeds.
+                                        path_buf2[path.text.len..][0..bun.module_info_extension.len].* = bun.module_info_extension.*;
+                                        if (bun.sys.File.toSourceAt(dir_fd, path_buf2[0 .. path.text.len + bun.module_info_extension.len], bun.default_allocator, .{}).asValue()) |record| {
+                                            defer bun.default_allocator.free(record.contents);
+                                            if (record.contents.len > 0) {
+                                                module_info = analyze_transpiled_module.ModuleInfoDeserialized.createFromCachedRecord(record.contents, bun.default_allocator);
+                                            }
+                                        }
                                     }
                                     break :brk if (already_bundled == .bytecode_cjs) .{ .bytecode_cjs = @constCast(bytecode.contents) } else .{ .bytecode = @constCast(bytecode.contents) };
                                 }
                                 break :brk default_value;
                             },
-                        },
-                        .source = source.*,
-                        .loader = loader,
-                        .input_fd = input_fd,
+                        };
+                        break :brk_ab .{
+                            .ast = undefined,
+                            .already_bundled = ab,
+                            .already_bundled_module_info = module_info,
+                            .source = source.*,
+                            .loader = loader,
+                            .input_fd = input_fd,
+                        };
                     },
                 };
             },

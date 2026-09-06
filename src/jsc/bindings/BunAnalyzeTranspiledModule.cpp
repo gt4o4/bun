@@ -23,6 +23,11 @@
 
 #include "JavaScriptCore/ModuleAnalyzer.h"
 #include "JavaScriptCore/ErrorType.h"
+#include "JavaScriptCore/ScriptFetchParameters.h"
+#include "JavaScriptCore/TopExceptionScope.h"
+#include "JavaScriptCore/Strong.h"
+#include "JavaScriptCore/StrongInlines.h"
+#include <limits>
 
 namespace JSC {
 
@@ -346,4 +351,150 @@ String dumpRecordInfo(JSModuleRecord* moduleRecord)
     return stream.toString();
 }
 
+}
+
+// ── module_info for pre-built ESM (`bun build --already-bundled --format=esm`) ──
+// JSC parses and analyzes the verbatim source on the bytecode-cache VM, and the
+// resulting JSModuleRecord is handed to Zig's ModuleInfo builder field by field
+// (the inverse of zig__ModuleInfoDeserialized__toJSModuleRecord above).  The
+// sidecar is therefore exactly the record the runtime would otherwise derive by
+// parsing, which is what lets a BunTranspiledModule provider skip that parse.
+struct bun_ModuleInfo;
+extern "C" bun_ModuleInfo* zig__ModuleInfo__create(bool isTypeScript);
+extern "C" uint32_t zig__ModuleInfo__str(bun_ModuleInfo*, const char* ptr, size_t len);
+extern "C" void zig__ModuleInfo__addDeclaredVariable(bun_ModuleInfo*, uint32_t id);
+extern "C" void zig__ModuleInfo__addLexicalVariable(bun_ModuleInfo*, uint32_t id);
+extern "C" void zig__ModuleInfo__addImportInfoSingle(bun_ModuleInfo*, uint32_t moduleName, uint32_t importName, uint32_t localName, bool onlyUsedAsType);
+extern "C" void zig__ModuleInfo__addImportInfoNamespace(bun_ModuleInfo*, uint32_t moduleName, uint32_t localName);
+extern "C" void zig__ModuleInfo__addExportInfoIndirect(bun_ModuleInfo*, uint32_t exportName, uint32_t importName, uint32_t moduleName);
+extern "C" void zig__ModuleInfo__addExportInfoLocal(bun_ModuleInfo*, uint32_t exportName, uint32_t localName);
+extern "C" void zig__ModuleInfo__addExportInfoNamespace(bun_ModuleInfo*, uint32_t exportName, uint32_t moduleName);
+extern "C" void zig__ModuleInfo__addExportInfoStar(bun_ModuleInfo*, uint32_t moduleName);
+extern "C" void zig__ModuleInfo__requestModule(bun_ModuleInfo*, uint32_t moduleName, uint32_t fetchParameters);
+extern "C" void zig__ModuleInfo__setFlags(bun_ModuleInfo*, bool containsImportMeta, bool hasTLA);
+extern "C" JSC::VM* Bun__vmForBytecodeCache();
+
+extern "C" bun_ModuleInfo* Bun__generateModuleInfoFromSourceCode(BunString* sourceProviderURL, const Latin1Character* inputSourceCode, size_t inputSourceCodeSize)
+{
+    using namespace JSC;
+    VM& vm = *Bun__vmForBytecodeCache();
+    JSLockHolder locker(vm);
+
+    // A bare JSGlobalObject suffices: ModuleAnalyzer only needs
+    // moduleRecordStructure() and the VM's private names.  One per thread,
+    // like the VM it lives in.
+    static thread_local Strong<JSGlobalObject> analysisGlobal;
+    if (!analysisGlobal)
+        analysisGlobal.set(vm, JSGlobalObject::create(vm, JSGlobalObject::createStructure(vm, jsNull())));
+    JSGlobalObject* globalObject = analysisGlobal.get();
+
+    WTF::String url = sourceProviderURL->toWTFString();
+    std::span<const Latin1Character> sourceCodeSpan(inputSourceCode, inputSourceCodeSize);
+    SourceCode sourceCode = makeSource(WTF::String(sourceCodeSpan), SourceOrigin(WTF::URL::fileURLWithFileSystemPath(url)), SourceTaintedOrigin::Untainted);
+
+    ParserError error;
+    std::unique_ptr<ModuleProgramNode> moduleProgramNode = parseRootNode<ModuleProgramNode>(
+        vm, sourceCode, ImplementationVisibility::Public, JSParserBuiltinMode::NotBuiltin,
+        StrictModeLexicallyScopedFeature, JSParserScriptMode::Module, SourceParseMode::ModuleAnalyzeMode, error);
+    if (error.isValid() || !moduleProgramNode)
+        return nullptr;
+
+    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+    Identifier moduleKey = Identifier::fromString(vm, url);
+    ModuleAnalyzer moduleAnalyzer(globalObject, moduleKey, sourceCode, moduleProgramNode->varDeclarations(), moduleProgramNode->lexicalVariables(), moduleProgramNode->features());
+    if (scope.exception()) {
+        scope.clearException();
+        return nullptr;
+    }
+    auto result = moduleAnalyzer.analyze(*moduleProgramNode);
+    if (scope.exception()) {
+        scope.clearException();
+        return nullptr;
+    }
+    if (!result)
+        return nullptr;
+    JSModuleRecord* record = result.value();
+
+    bun_ModuleInfo* mi = zig__ModuleInfo__create(false);
+    if (!mi)
+        return nullptr;
+    auto id = [&](const Identifier& ident) -> uint32_t {
+        // StringID's sentinels (analyze_transpiled_module.zig) for the two
+        // private names JSC uses for `export default` and namespace imports.
+        if (ident == vm.propertyNames->starDefaultPrivateName)
+            return std::numeric_limits<uint32_t>::max();
+        if (ident == vm.propertyNames->starNamespacePrivateName)
+            return std::numeric_limits<uint32_t>::max() - 1;
+        auto utf8 = ident.string().string().utf8();
+        return zig__ModuleInfo__str(mi, utf8.data(), utf8.length());
+    };
+    auto uidId = [&](UniquedStringImpl* uid) -> uint32_t { return id(Identifier::fromUid(vm, uid)); };
+
+    for (const auto& pair : record->declaredVariables())
+        zig__ModuleInfo__addDeclaredVariable(mi, uidId(pair.key.get()));
+    for (const auto& pair : record->lexicalVariables())
+        zig__ModuleInfo__addLexicalVariable(mi, uidId(pair.key.get()));
+
+    // Requested modules keep source order (Vector).  FetchParameters mirror
+    // ModuleInfo.FetchParameters' encoding: none / javascript / webassembly /
+    // json are the top sentinels, host-defined is a StringID.
+    for (const auto& request : record->requestedModules()) {
+        uint32_t fetch = std::numeric_limits<uint32_t>::max();
+        if (request.m_attributes) {
+            switch (request.m_attributes->type()) {
+            case ScriptFetchParameters::Type::None:
+                break;
+            case ScriptFetchParameters::Type::JavaScript:
+                fetch = std::numeric_limits<uint32_t>::max() - 1;
+                break;
+            case ScriptFetchParameters::Type::WebAssembly:
+                fetch = std::numeric_limits<uint32_t>::max() - 2;
+                break;
+            case ScriptFetchParameters::Type::JSON:
+                fetch = std::numeric_limits<uint32_t>::max() - 3;
+                break;
+            case ScriptFetchParameters::Type::HostDefined: {
+                auto utf8 = request.m_attributes->hostDefinedImportType().utf8();
+                fetch = zig__ModuleInfo__str(mi, utf8.data(), utf8.length());
+                break;
+            }
+            }
+        }
+        zig__ModuleInfo__requestModule(mi, id(request.m_specifier), fetch);
+    }
+
+    for (const auto& pair : record->importEntries()) {
+        const auto& entry = pair.value;
+        switch (entry.type) {
+        case AbstractModuleRecord::ImportEntryType::Single:
+            zig__ModuleInfo__addImportInfoSingle(mi, id(entry.moduleRequest), id(entry.importName), id(entry.localName), false);
+            break;
+        case AbstractModuleRecord::ImportEntryType::SingleTypeScript:
+            zig__ModuleInfo__addImportInfoSingle(mi, id(entry.moduleRequest), id(entry.importName), id(entry.localName), true);
+            break;
+        case AbstractModuleRecord::ImportEntryType::Namespace:
+            zig__ModuleInfo__addImportInfoNamespace(mi, id(entry.moduleRequest), id(entry.localName));
+            break;
+        }
+    }
+
+    for (const auto& pair : record->exportEntries()) {
+        const auto& entry = pair.value;
+        switch (entry.type) {
+        case AbstractModuleRecord::ExportEntry::Type::Local:
+            zig__ModuleInfo__addExportInfoLocal(mi, id(entry.exportName), id(entry.localName));
+            break;
+        case AbstractModuleRecord::ExportEntry::Type::Indirect:
+            zig__ModuleInfo__addExportInfoIndirect(mi, id(entry.exportName), id(entry.importName), id(entry.moduleName));
+            break;
+        case AbstractModuleRecord::ExportEntry::Type::Namespace:
+            zig__ModuleInfo__addExportInfoNamespace(mi, id(entry.exportName), id(entry.moduleName));
+            break;
+        }
+    }
+    for (const auto& moduleName : record->starExportEntries())
+        zig__ModuleInfo__addExportInfoStar(mi, uidId(moduleName.get()));
+
+    zig__ModuleInfo__setFlags(mi, (moduleProgramNode->features() & ImportMetaFeature) != 0, moduleProgramNode->usesAwait());
+    return mi;
 }
