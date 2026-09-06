@@ -333,7 +333,10 @@ export function cargoBuildInvocation(cfg: Config): CargoInvocation {
     profile.name,
     "--locked",
   ];
-  if (tier3 || cfg.release || cfg.asan) {
+  // cfg.buildStd defaults to `release || asan` (config.ts); profiles may
+  // pin it off, e.g. the Nix release tiers, whose sandbox would otherwise
+  // have to vendor rust-src's crate graph. Tier 3 is never optional.
+  if (tier3 || cfg.buildStd) {
     // Rebuild std from source (cargoBuildStdArg) because:
     // tier3:   no prebuilt `rust-std` exists.
     // release: prebuilt std is native code built for generic x86-64 with no

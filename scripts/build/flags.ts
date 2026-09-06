@@ -68,9 +68,19 @@ export const cpuTargetFlags: Flag[] = [
     desc: "ARM64 Windows: clang-cl prefix required (/clang: passes to clang)",
   },
   {
+    flag: "-march=penryn",
+    when: c => c.x64 && c.x64Cpu === "penryn",
+    desc: "x64 pre-SSE4.2: Penryn (2008) — SSE4.1 only, no SSE4.2/POPCNT/AVX",
+  },
+  {
     flag: "-march=nehalem",
-    when: c => c.x64,
-    desc: "x64: Nehalem (2008) — no AVX, broadest compatibility",
+    when: c => c.x64 && c.x64Cpu === "nehalem",
+    desc: "x64 baseline (default): Nehalem (2008) — SSE4.2 + POPCNT, no AVX",
+  },
+  {
+    flag: "-march=haswell",
+    when: c => c.x64 && c.x64Cpu === "haswell",
+    desc: "x64: Haswell (2013) — AVX2, BMI2 available",
   },
 ];
 
@@ -1240,8 +1250,18 @@ export const linkerFlags: Flag[] = [
   },
   {
     flag: ["-static-libstdc++", "-static-libgcc"],
-    when: c => c.linux && c.abi === "gnu",
-    desc: "Static C++ runtime (don't depend on host libstdc++)",
+    when: c => c.linux && c.abi === "gnu" && !c.dynamicLibstdcxx,
+    desc: "Static C++ runtime (default — don't depend on host libstdc++)",
+  },
+  {
+    // Compat-stdenv release tiers (release-penryn/-nehalem/-haswell): the
+    // build host's glibc matches the target's glibc floor (2.34, RHEL 9 /
+    // Ubuntu 22.04+), so the matching libstdc++ is already on every
+    // supported host. Dropping the static copy shaves ~5 MB and lets
+    // distro libstdc++ security updates propagate.
+    flag: ["-lstdc++", "-lgcc_s"],
+    when: c => c.linux && c.abi === "gnu" && c.dynamicLibstdcxx,
+    desc: "Dynamic C++ runtime (compat-stdenv release tiers)",
   },
   {
     flag: ["-lstdc++", "-lgcc"],

@@ -30,6 +30,7 @@ import { writeIfChanged } from "./fs.ts";
 import type { Ninja } from "./ninja.ts";
 import { quote, quoteArgs, slash } from "./shell.ts";
 import { streamPath } from "./stream.ts";
+import { resolveSystemLib } from "./tools.ts";
 
 /**
  * If the source dir exists with a stale (or missing) identity stamp,
@@ -155,6 +156,46 @@ export type Source =
        * (WebKit, nodejs-headers) override to `cacheDir/<name>-<version>/`.
        */
       destDir?: string;
+    }
+  | {
+      /**
+       * Library is supplied by the host system / package manager — we only
+       * pass `-l<name>` flags to the linker. No fetch, no build, no headers
+       * vendored (they resolve from the toolchain's default include path:
+       * CPATH / -isystem from nixpkgs buildInputs, /usr/include elsewhere).
+       * Used when a dep is available everywhere we ship and shared-library
+       * page deduplication across processes is worth the dynamic-link cost.
+       * A dep opts in from `source()` when `cfg.systemDeps.has(name)`;
+       * resolveDep() then ignores its `build()` / `provides()` entirely.
+       */
+      kind: "system";
+      /**
+       * Linker args passed verbatim into ldflags. Typically `-l<name>` per
+       * library (`["-lzstd"]`); multi-lib deps push every name in the
+       * intended link order (`["-lbrotlidec", "-lbrotlienc", "-lbrotlicommon"]`).
+       * Toolchain default decides static-vs-shared; on Nix the .so wins.
+       */
+      linkFlags: string[];
+      /**
+       * Library names (no `lib` prefix, no `.so` suffix) the link rule should
+       * stat as implicit inputs. Resolved at configure time via
+       * `<cc> -print-file-name=lib<name>.so`. Resolution failures are silent
+       * (e.g. on dev machines without -dev packages installed) — the link
+       * still works via -l, only mtime tracking is missing.
+       */
+      trackLibs?: string[];
+      /**
+       * Extra `-I` paths. Usually empty: nixpkgs .dev outputs flow into the
+       * default search path. Set when a header lives somewhere weird.
+       */
+      extraIncludes?: string[];
+      /**
+       * Identifier for `bun_dependency_versions.h` (process.versions.<dep>).
+       * For system-linked deps we keep reporting the upstream commit the dep
+       * would have been built at — still the API surface bun was tested
+       * against. Optional: undefined → omitted from the generated header.
+       */
+      commit?: string;
     };
 
 /**
@@ -513,6 +554,13 @@ export interface ResolvedDep {
    * link line / cpp-only archive instead of an intermediate `.a`.
    */
   objects: string[];
+  /**
+   * Free-form linker flags (`-l<name>`, `-L<dir>`, `-Wl,...`) for system-
+   * supplied deps. Goes into ldflags, NOT $in — ninja can't stat a `-l`
+   * spec. Use `trackedLibFiles` for the resolved file paths if you need
+   * mtime tracking.
+   */
+  linkFlags?: string[];
   /** Absolute include paths for -I flags. */
   includes: string[];
   defines: string[];
@@ -528,6 +576,13 @@ export interface ResolvedDep {
    * the source stamp (.ref).
    */
   outputs: string[];
+  /**
+   * Resolved absolute paths to system library files (e.g. `/nix/store/.../
+   * libzstd.so.1.5.6`). Added as link rule `implicitInputs` so ninja relinks
+   * when a Nix store path changes. Empty when `Source.kind !== "system"` or
+   * when `<cc> -print-file-name` couldn't resolve the library.
+   */
+  trackedLibFiles?: string[];
   /**
    * Stamps of this dep's `forbidUndefined` checks. Whatever the objects go
    * into next waits for them: the per-dep archive here when cfg.archiveDeps,
@@ -778,6 +833,31 @@ export function resolveDep(
   }
 
   const source = depSource(cfg, dep);
+
+  // ─── System: no fetch, no build, just -l flags into ldflags. ───
+  // For deps the host package manager supplies (system zstd/brotli on Nix).
+  // `build()` / `provides()` are not even consulted — all linkage info comes
+  // from `source`, so a dep definition only has to branch in `source()`.
+  if (source.kind === "system") {
+    const trackedLibFiles = (source.trackLibs ?? [])
+      .map(name => resolveSystemLib(cfg.cc, name))
+      .filter((p): p is string => p !== null);
+    return {
+      name: dep.name,
+      libs: [],
+      objects: [],
+      linkFlags: [...source.linkFlags],
+      includes: source.extraIncludes ?? [],
+      defines: [],
+      sources: [],
+      // outputs feeds depHeaderSignal in bun.ts: relink if the resolved
+      // .so changes (Nix store path bump).
+      outputs: trackedLibFiles,
+      trackedLibFiles,
+      checks: [],
+    };
+  }
+
   const buildSpec = dep.build(cfg);
   const provides = dep.provides(cfg);
 
@@ -1249,6 +1329,10 @@ function emitNestedCmake(
   args.push(`-DCMAKE_BUILD_TYPE=${buildType}`);
   args.push(`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`);
   args.push(`-DBUILD_SHARED_LIBS=OFF`);
+  // We never build dep tests in bun's pipeline. Skipping them avoids
+  // try_run feature-detection that breaks under cross-stdenv builds where
+  // the test binary's libc doesn't match the runner's.
+  args.push(`-DBUILD_TESTING=OFF`);
 
   // Windows MSVC runtime: CMP0091 NEW (CMake 3.15+) uses this property
   // instead of injecting /MD into CMAKE_<LANG>_FLAGS_<CONFIG>. Without

@@ -162,6 +162,144 @@ export const profiles = {
   },
 
   /**
+   * Nix release tiers (nix/bun-target.nix, built under the flake's compat
+   * stdenv so the binary's glibc floor stays at 2.34 — RHEL 9 / Ubuntu
+   * 22.04+). Shared shape:
+   *
+   *   webkit: "local"     — the prebuilt is nehalem-only and built against a
+   *                         different libstdc++; every tier compiles WebKit
+   *                         under the same compat stdenv.
+   *   lto: true           — required for a Release local WebKit: deps/webkit.ts
+   *                         silently downgrades the nested build to
+   *                         RelWithDebInfo (no -O3) when lto is off.
+   *   crossLangLto: false — rustc's LLVM is newer than clang 21's, so cross-
+   *                         language LTO would swap the link to bare rust-lld
+   *                         and bypass the rpath-injecting `ld` wrapper the
+   *                         Nix build relies on. Both halves still LTO on
+   *                         their own (C++ -flto=thin, Rust fat).
+   *   buildStd: false     — no -Zbuild-std: the sandbox would have to vendor
+   *                         rust-src's crate graph for ~200 KB of symbolizer.
+   *   dynamicLibstdcxx    — the compat host's libstdc++ is the target ABI.
+   *   systemDeps          — link unpatched, ABI-stable deps from the system
+   *                         instead of statically bundling them: shared-
+   *                         library .text pages dedup across the several bun
+   *                         processes these boxes run, an RSS win the static
+   *                         build doesn't get. In `systemDeps` mode a dep's
+   *                         `source()` returns `kind: "system"`, so its
+   *                         tarball is never fetched.
+   *
+   * systemDeps membership: hdrhistogram and libhwy match bun's pin exactly
+   * in nixpkgs; libhwy ships .a only (no runtime dedup, but skips a ~50 MB
+   * fetch + nested cmake). libuv is not linked on Linux at all upstream
+   * (in-tree node-api stubs; deps/libuv.ts is Windows-only), so it is not a
+   * system dep either. Skipped:
+   * boringssl/mimalloc/tinycc (oven-sh forks), libarchive/lolhtml/lshpack
+   * (load-bearing patches), picohttpparser (single-source direct compile),
+   * and since 1.4.x c-ares — upstream's accept-rdata-compression.patch
+   * (lenient RDATA name compression for dns.resolveSrv) would be lost.
+   */
+
+  /**
+   * Pre-SSE4.2 build targeting Penryn (late Core 2 Duo, 2008).
+   *
+   * Runtime caveats — verified by disassembly of the produced binary:
+   *
+   *   1. WebAssembly v128 SIMD opcodes SIGILL. JSC's in-place WASM
+   *      interpreter (InPlaceInterpreter64.asm) emits AVX ops (vpshufb,
+   *      vroundps, vroundpd) unconditionally in `ipint_simd_*`.
+   *
+   *   2. WebAssembly i32.popcnt / i64.popcnt opcodes SIGILL. The LLInt
+   *      WASM interpreter's `ipint_i32_popcnt` / `ipint_i64_popcnt`
+   *      symbols emit native `popcntq` directly (Penryn lacks POPCNT;
+   *      Nehalem is the floor for that).
+   *
+   * Plain JS (all four JIT tiers, including FTL via runtime supportsAVX()
+   * fallbacks), Bun APIs, and WASM modules that don't use SIMD or popcnt
+   * all work. PCLMUL appears in the binary but only in zlib-ng's
+   * runtime-dispatched CRC32 fast path, and POPCNT also appears in
+   * simdutf's `westmere` kernel — both behind runtime CPU dispatch.
+   */
+  "release-penryn": {
+    buildType: "Release",
+    webkit: "local",
+    x64Cpu: "penryn",
+    lto: true,
+    crossLangLto: false,
+    buildStd: false,
+    dynamicLibstdcxx: true,
+    // Sub-native tier: validated on the deployed machine / under qemu.
+    smokeTest: false,
+    systemDeps: [
+      "zstd",
+      "brotli",
+      "libdeflate",
+      "zlib",
+      "hdrhistogram",
+      "highway",
+      "libspng",
+      "libwebp",
+      "libjpeg-turbo",
+    ],
+  },
+
+  /**
+   * x64 baseline build targeting Nehalem (2008): SSE4.2 + POPCNT, no AVX —
+   * upstream's shipped x64 tier, rebuilt under the compat stdenv.
+   *
+   * Runtime caveat: WebAssembly v128 SIMD still SIGILLs because JSC's LLInt
+   * `ipint_simd_*` emits AVX (vpshufb/vroundps/vroundpd) — Haswell is the
+   * floor for that. Plain JS, native popcntq (Nehalem+), and non-SIMD WASM
+   * all work.
+   */
+  "release-nehalem": {
+    buildType: "Release",
+    webkit: "local",
+    x64Cpu: "nehalem",
+    lto: true,
+    crossLangLto: false,
+    buildStd: false,
+    dynamicLibstdcxx: true,
+    // Sub-native tier: validated on the deployed machine / under qemu.
+    smokeTest: false,
+    systemDeps: [
+      "zstd",
+      "brotli",
+      "libdeflate",
+      "zlib",
+      "hdrhistogram",
+      "highway",
+      "libspng",
+      "libwebp",
+      "libjpeg-turbo",
+    ],
+  },
+
+  /**
+   * x64 Haswell (2013) — AVX2 + BMI2, no runtime caveats. Same CPU target
+   * as upstream's pre-1.4 default, with the compat glibc floor.
+   */
+  "release-haswell": {
+    buildType: "Release",
+    webkit: "local",
+    x64Cpu: "haswell",
+    lto: true,
+    crossLangLto: false,
+    buildStd: false,
+    dynamicLibstdcxx: true,
+    systemDeps: [
+      "zstd",
+      "brotli",
+      "libdeflate",
+      "zlib",
+      "hdrhistogram",
+      "highway",
+      "libspng",
+      "libwebp",
+      "libjpeg-turbo",
+    ],
+  },
+
+  /**
    * Release + assertions + logs. RelWithDebInfo → cargo `release` profile
    * with `debug-assertions = true` (runtime safety checks), matching the
    * old cmake build:assert script.

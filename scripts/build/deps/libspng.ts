@@ -17,11 +17,17 @@ const LIBSPNG_COMMIT = "fb768002d4288590083a476af628e51c3f1d47cd"; // v0.7.4
 export const libspng: Dependency = {
   name: "libspng",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "randy408/libspng",
-    commit: LIBSPNG_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("libspng")) {
+      // <spng.h> resolves from the toolchain default include path.
+      return { kind: "system", commit: LIBSPNG_COMMIT, linkFlags: ["-lspng"], trackLibs: ["spng"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "randy408/libspng",
+      commit: LIBSPNG_COMMIT,
+    };
+  },
 
   // spng.c includes <zlib.h>; zlib-ng generates that header into its build
   // dir during its own configure, so we need zlib BUILT (not just fetched).

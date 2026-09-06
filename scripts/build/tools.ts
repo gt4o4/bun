@@ -9,7 +9,7 @@
 import { execSync, spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, isAbsolute, join, win32 } from "node:path";
 import type { Arch, OS, Toolchain } from "./config.ts";
 import { BuildError } from "./error.ts";
 
@@ -217,6 +217,50 @@ export function clangTargetArch(clang: string): Arch | undefined {
   if (/^(aarch64|arm64)/.test(triple)) return "aarch64";
   if (/^(x86_64|x64|amd64)/i.test(triple)) return "x64";
   return undefined;
+}
+
+/**
+ * Resolve a system library name (e.g. "zstd") to the absolute path the C
+ * compiler would actually link. Used by `kind: "system"` source resolution
+ * (source.ts) to populate ResolvedDep.trackedLibFiles, which become
+ * implicit inputs of the link rule so a Nix store path bump triggers relink.
+ *
+ * Probes platform-native shared names first (`.so` / `.dylib` / `.lib`), then
+ * falls back to `.a` — some nixpkgs entries (highway is the headline case)
+ * ship the static archive only.
+ *
+ * Returns null when neither is found in the toolchain's search paths —
+ * caller treats this as "skip mtime tracking", not an error: the link still
+ * goes through `-l` and the linker's diagnostic is the more informative one.
+ *
+ * Mechanics: `clang -print-file-name=libfoo.so` returns the resolved path if
+ * found, or echoes the bare query if not; "no path component" = not found.
+ */
+const systemLibCache = new Map<string, string | null>();
+export function resolveSystemLib(cc: string, name: string): string | null {
+  const key = `${cc}\0${name}`;
+  const cached = systemLibCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const exts =
+    process.platform === "darwin" ? [".dylib", ".a"] : process.platform === "win32" ? [".lib", ".a"] : [".so", ".a"];
+
+  let resolved: string | null = null;
+  for (const ext of exts) {
+    const result = spawnSync(cc, [`-print-file-name=lib${name}${ext}`], {
+      encoding: "utf8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.error || result.status !== 0) continue;
+    const path = (result.stdout ?? "").trim();
+    if (path.length > 0 && (isAbsolute(path) || win32.isAbsolute(path))) {
+      resolved = path;
+      break;
+    }
+  }
+  systemLibCache.set(key, resolved);
+  return resolved;
 }
 
 /**

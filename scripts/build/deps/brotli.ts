@@ -30,11 +30,23 @@ const SOURCES = [
 export const brotli: Dependency = {
   name: "brotli",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "google/brotli",
-    commit: BROTLI_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("brotli")) {
+      // <brotli/{encode,decode}.h> resolve from the toolchain default include
+      // path. nixpkgs brotli ships v1.1.0 — same as our pin.
+      return {
+        kind: "system",
+        commit: BROTLI_COMMIT,
+        linkFlags: ["-lbrotlidec", "-lbrotlienc", "-lbrotlicommon"],
+        trackLibs: ["brotlidec", "brotlienc", "brotlicommon"],
+      };
+    }
+    return {
+      kind: "github-archive",
+      repo: "google/brotli",
+      commit: BROTLI_COMMIT,
+    };
+  },
 
   build: cfg => {
     const spec: DirectBuild = {

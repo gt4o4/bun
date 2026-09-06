@@ -22,11 +22,20 @@ const disabledTargets = "HWY_DISABLED_TARGETS=HWY_ALL_SVE-HWY_SVE2_128";
 export const highway: Dependency = {
   name: "highway",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "google/highway",
-    commit: HIGHWAY_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("highway")) {
+      // nixpkgs ships libhwy.a only (no .so build); resolveSystemLib falls
+      // through to the .a probe. Skips the github fetch + nested cmake build
+      // (~50 MB source, 2-3 min). <hwy/highway.h> resolves from nixpkgs
+      // libhwy/include via the toolchain default include path.
+      return { kind: "system", commit: HIGHWAY_COMMIT, linkFlags: ["-lhwy"], trackLibs: ["hwy"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "google/highway",
+      commit: HIGHWAY_COMMIT,
+    };
+  },
 
   patches: ["patches/highway/silence-warnings.patch"],
 
