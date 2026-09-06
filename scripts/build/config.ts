@@ -112,6 +112,8 @@ export interface Config {
   pgoUse: string | undefined;
   asan: boolean;
   zigAsan: boolean;
+  /** zstd-compress debug sections (-gz=zstd). Off for LLVMs built without zstd, e.g. Nix. */
+  debugCompression: boolean;
   assertions: boolean;
   logs: boolean;
   /** x64-only: target nehalem (no AVX) instead of haswell. Derived from `x64Cpu !== "haswell"`. */
@@ -276,6 +278,7 @@ export interface PartialConfig {
   pgoUse?: string;
   asan?: boolean;
   zigAsan?: boolean;
+  debugCompression?: boolean;
   assertions?: boolean;
   logs?: boolean;
   baseline?: boolean;
@@ -611,6 +614,10 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
   // Zig ASAN follows ASAN unless explicitly overridden
   const zigAsan = partial.zigAsan ?? asan;
 
+  // Debug-section compression (-gz=zstd): on by default. Nix LLVM is built
+  // without zstd and hard-errors on it — `--debugCompression=off`.
+  const debugCompression = partial.debugCompression ?? true;
+
   // Assertions: default on in debug OR asan. ASAN coupling is ABI-critical:
   // the -asan WebKit prebuilt is built with ASSERT_ENABLED=1, which gates
   // struct fields (RefCountDebugger etc). If bun's C++ isn't also compiled
@@ -825,6 +832,7 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     pgoUse,
     asan,
     zigAsan,
+    debugCompression,
     assertions,
     logs,
     baseline,

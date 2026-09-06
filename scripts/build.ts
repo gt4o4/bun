@@ -341,6 +341,7 @@ function parseArgs(argv: string[]): CliArgs {
     "lto",
     "asan",
     "zigAsan",
+    "debugCompression",
     "assertions",
     "logs",
     "baseline",
