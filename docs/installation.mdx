@@ -296,6 +296,14 @@ For distributions without `glibc` (Alpine Linux, Void Linux):
 Bun ships a single x64 binary per platform. It targets the Nehalem microarchitecture (SSE4.2) and selects AVX2/AVX-512
 code paths at runtime when the CPU supports them, so there is no separate "baseline" download to choose.
 
+<Note>
+  This fork (gt4o4/bun) additionally publishes three Linux x64 tiers built from `nix/bun-target.nix` — `penryn` (SSE4.1
+  only, for late Core 2 / early Atom machines), `nehalem` (upstream's tier) and `haswell` (AVX2) — as
+  `bun-linux-x64-<tier>.tar.xz` on its `v<version>-compat-rN` releases. They dynamically link a handful of system
+  libraries and carry a glibc 2.34 floor; the runtime caveats of the sub-Haswell tiers (WebAssembly SIMD, and
+  `popcnt` on Penryn) and the build recipe are in CONTRIBUTING.md under "Building the release tiers".
+</Note>
+
 | Platform | Intel Requirement               | AMD Requirement    |
 | -------- | ------------------------------- | ------------------ |
 | x64      | Nehalem (1st gen Core) or newer | Bulldozer or newer |
