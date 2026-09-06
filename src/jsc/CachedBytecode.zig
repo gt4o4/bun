@@ -70,7 +70,26 @@ pub const CachedBytecode = opaque {
     pub fn isInstance(allocator_: std.mem.Allocator) bool {
         return allocator_.vtable == VTable;
     }
+
+    extern fn Bun__generateModuleInfoFromSourceCode(sourceProviderURL: *bun.String, input_code: [*]const u8, inputSourceCodeSize: usize) ?*ModuleInfo;
+
+    /// Serialized module_info for a pre-built ESM source: JSC parses and
+    /// analyzes these exact bytes (BunAnalyzeTranspiledModule.cpp) and the
+    /// record comes back through ModuleInfo's builder, then is serialized in
+    /// the format the runtime transpiler cache and the standalone graph load.
+    pub fn generateModuleInfoForESM(sourceProviderURL: *bun.String, input: []const u8, gpa: std.mem.Allocator) ?[]u8 {
+        const mi = Bun__generateModuleInfoFromSourceCode(sourceProviderURL, input.ptr, input.len) orelse return null;
+        defer mi.destroy();
+        mi.finalize() catch return null;
+        var out = std.array_list.Managed(u8).init(gpa);
+        mi.asDeserialized().serialize(out.writer()) catch {
+            out.deinit();
+            return null;
+        };
+        return out.toOwnedSlice() catch null;
+    }
 };
 
 const bun = @import("bun");
 const std = @import("std");
+const ModuleInfo = @import("../bundler/analyze_transpiled_module.zig").ModuleInfo;

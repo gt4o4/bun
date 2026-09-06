@@ -393,5 +393,50 @@ export fn zig_log(msg: [*:0]const u8) void {
     bun.Output.errorWriter().print("{s}\n", .{std.mem.span(msg)}) catch {};
 }
 
+// ── C ABI for building a ModuleInfo from C++ ─────────────────────────────────
+// Used by `bun build --already-bundled --format=esm`: JSC parses the verbatim
+// source and BunAnalyzeTranspiledModule.cpp hands the resulting JSModuleRecord
+// over field by field (the inverse of toJSModuleRecord), so the serialized
+// record is exactly what the runtime would derive by parsing.  StringIDs cross
+// as u32; the two sentinels (star_default / star_namespace) are mapped on the
+// C++ side.
+export fn zig__ModuleInfo__create(is_typescript: bool) ?*ModuleInfo {
+    return ModuleInfo.create(bun.default_allocator, is_typescript) catch null;
+}
+export fn zig__ModuleInfo__str(mi: *ModuleInfo, ptr: [*]const u8, len: usize) StringID {
+    return bun.handleOom(mi.str(ptr[0..len]));
+}
+export fn zig__ModuleInfo__addDeclaredVariable(mi: *ModuleInfo, id: StringID) void {
+    bun.handleOom(mi.addDeclaredVariable(id));
+}
+export fn zig__ModuleInfo__addLexicalVariable(mi: *ModuleInfo, id: StringID) void {
+    bun.handleOom(mi.addLexicalVariable(id));
+}
+export fn zig__ModuleInfo__addImportInfoSingle(mi: *ModuleInfo, module_name: StringID, import_name: StringID, local_name: StringID, only_used_as_type: bool) void {
+    bun.handleOom(mi.addImportInfoSingle(module_name, import_name, local_name, only_used_as_type));
+}
+export fn zig__ModuleInfo__addImportInfoNamespace(mi: *ModuleInfo, module_name: StringID, local_name: StringID) void {
+    bun.handleOom(mi.addImportInfoNamespace(module_name, local_name));
+}
+export fn zig__ModuleInfo__addExportInfoIndirect(mi: *ModuleInfo, export_name: StringID, import_name: StringID, module_name: StringID) void {
+    bun.handleOom(mi.addExportInfoIndirect(export_name, import_name, module_name));
+}
+export fn zig__ModuleInfo__addExportInfoLocal(mi: *ModuleInfo, export_name: StringID, local_name: StringID) void {
+    bun.handleOom(mi.addExportInfoLocal(export_name, local_name));
+}
+export fn zig__ModuleInfo__addExportInfoNamespace(mi: *ModuleInfo, export_name: StringID, module_name: StringID) void {
+    bun.handleOom(mi.addExportInfoNamespace(export_name, module_name));
+}
+export fn zig__ModuleInfo__addExportInfoStar(mi: *ModuleInfo, module_name: StringID) void {
+    bun.handleOom(mi.addExportInfoStar(module_name));
+}
+export fn zig__ModuleInfo__requestModule(mi: *ModuleInfo, module_name: StringID, fetch_parameters: u32) void {
+    bun.handleOom(mi.requestModule(module_name, @enumFromInt(fetch_parameters)));
+}
+export fn zig__ModuleInfo__setFlags(mi: *ModuleInfo, contains_import_meta: bool, has_tla: bool) void {
+    mi.flags.contains_import_meta = contains_import_meta;
+    mi.flags.has_tla = has_tla;
+}
+
 const bun = @import("bun");
 const std = @import("std");

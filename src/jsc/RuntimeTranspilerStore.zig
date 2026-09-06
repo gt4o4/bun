@@ -515,6 +515,7 @@ pub const RuntimeTranspilerStore = struct {
                     .bytecode_cache = if (bytecode_slice.len > 0) bytecode_slice.ptr else null,
                     .bytecode_cache_size = bytecode_slice.len,
                     .is_commonjs_module = parse_result.already_bundled.isCommonJS(),
+                    .module_info = if (parse_result.already_bundled_module_info) |mi| @ptrCast(mi) else null,
                     .tag = this.resolved_source.tag,
                 };
                 this.resolved_source.source_code.ensureHash();
