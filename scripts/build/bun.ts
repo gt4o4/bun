@@ -200,6 +200,12 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   // compiled source files (deps like picohttpparser that provide .c files
   // instead of a .a — we compile those alongside bun's own sources).
   const depLibs: string[] = [];
+  // Free-form linker flags from system deps (-lzstd etc.). Goes in $ldflags,
+  // not $in. Tracked separately so depLibs stays "files ninja can stat".
+  const depLinkFlags: string[] = [];
+  // Resolved system .so paths for the link rule's implicitInputs — relink
+  // when a Nix store path bumps. Empty for source-built deps.
+  const depTrackedLibFiles: string[] = [];
   const depObjects: string[] = [];
   const depIncludes: string[] = [];
   const depDefines: string[] = [];
@@ -216,6 +222,8 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   const depChecks: string[] = [];
   for (const d of deps) {
     depLibs.push(...d.libs);
+    depLinkFlags.push(...(d.linkFlags ?? []));
+    depTrackedLibFiles.push(...(d.trackedLibFiles ?? []));
     depObjects.push(...d.objects);
     depChecks.push(...d.checks);
     depIncludes.push(...d.includes);
@@ -428,12 +436,12 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
   const shimInputs = emitShims(n, cfg);
   const depLink = lazyDepObjects(cfg, depObjects);
   const linkObjects = [...cxxObjects, ...cObjects, ...depLink.eager, ...rustObjects, ...windowsRes];
-  const ldflags = [...flags.ldflags, ...systemLibs(cfg)];
+  const ldflags = [...flags.ldflags, ...depLinkFlags, ...systemLibs(cfg)];
   const exe = link(n, cfg, exeName, linkObjects, {
     libs: depLibs,
     lazyObjects: depLink.lazy,
     flags: ldflags,
-    implicitInputs: [...linkImplicitInputs(cfg), ...shimInputs],
+    implicitInputs: [...linkImplicitInputs(cfg), ...shimInputs, ...depTrackedLibFiles],
     // Declare the maps the release link writes as side-products (`perf`
     // symbolication on linux; the order file tracer's symbol table on windows).
     linkerMapOutputs: linkerMapOutputs(cfg),
@@ -537,7 +545,7 @@ export function emitPostLink(
 
 /** Stamp of the `<exe> --revision` smoke test, when the host can run the target. */
 function smokeTestStamp(cfg: Config, exeName: string): string | undefined {
-  return cfg.canRunOnHost ? resolve(cfg.buildDir, `${exeName}.smoke-test-passed`) : undefined;
+  return cfg.smokeTest && cfg.canRunOnHost ? resolve(cfg.buildDir, `${exeName}.smoke-test-passed`) : undefined;
 }
 
 /** Stamp of verify-binary.ts' scans of the executable, when the LLVM readers are available. */
@@ -581,14 +589,14 @@ const verifyBinaryPath = resolve(import.meta.dirname, "verify-binary.ts");
  * expectations are serialized now; the scan runs as a validation of the link.
  */
 /**
- * Only CI fails on a finding. Local builds (`cfg.ci` unset) run the static
+ * CI and the compat-runtime release tiers fail on a finding. Other local builds run the static
  * scans and print the same report as warnings, so a toolchain or distro
  * difference on a dev machine never costs the binary. In CI, ASan and debug
  * builds also only warn: the expectations describe the binaries that ship, and
  * those builds are for finding bugs with.
  */
 export function binaryChecksWarnOnly(cfg: Config): boolean {
-  return !cfg.ci || cfg.asan || cfg.debug;
+  return (!cfg.ci && !cfg.dynamicLibstdcxx) || cfg.asan || cfg.debug;
 }
 
 function emitBinaryVerify(
@@ -1012,6 +1020,10 @@ export function validateBunConfig(cfg: Config): void {
   // build the pinned tarball while the banner claims `local:<typo>`.
   // Keyed by string: these names are the user's.
   const depsByName = new Map<string, Dependency>(allDeps.map(d => [d.name, d]));
+  for (const name of cfg.systemDeps) {
+    const dep = depsByName.get(name);
+    assert(dep !== undefined && dep.source(cfg).kind === "system", `--system-deps: unsupported system dep '${name}'`);
+  }
   for (const [name, path] of Object.entries(cfg.localDeps)) {
     const dep = depsByName.get(name);
     assert(dep !== undefined, `--local-deps: unknown dep '${name}'`, {

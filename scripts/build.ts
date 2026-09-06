@@ -424,7 +424,13 @@ interface CliArgs {
 }
 
 /** How a `--<field>=<value>` is read, which the field's type decides. */
-type ConfigFlagKind<T> = [T] extends [boolean] ? "boolean" : [T] extends [number] ? "number" : "string";
+type ConfigFlagKind<T> = [T] extends [boolean]
+  ? "boolean"
+  : [T] extends [number]
+    ? "number"
+    : [T] extends [readonly string[]]
+      ? "list"
+      : "string";
 
 /**
  * Every `PartialConfig` field is a `--<field>` flag. The mapped type makes this list complete and correct by
@@ -444,6 +450,10 @@ const configFlags: { [K in keyof Required<PartialConfig>]: ConfigFlagKind<NonNul
   assertions: "boolean",
   logs: "boolean",
   baseline: "boolean",
+  x64Cpu: "string",
+  dynamicLibstdcxx: "boolean",
+  smokeTest: "boolean",
+  systemDeps: "list",
   canary: "boolean",
   staticSqlite: "boolean",
   staticLibatomic: "boolean",
@@ -609,8 +619,14 @@ function parseArgs(argv: string[]): CliArgs {
       });
     } else {
       // The value's type follows `kind`, which `configFlags` ties to the field's declared type.
-      (overrides as Record<string, boolean | number | string>)[key] =
-        kind === "boolean" ? parseBool(value) : kind === "number" ? parseInteger(rawKey, value) : value;
+      (overrides as Record<string, boolean | number | string | string[]>)[key] =
+        kind === "boolean"
+          ? parseBool(value)
+          : kind === "number"
+            ? parseInteger(rawKey, value)
+            : kind === "list"
+              ? value.split(",").map(name => name.trim()).filter(Boolean)
+              : value;
     }
   }
 

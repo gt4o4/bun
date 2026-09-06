@@ -15,6 +15,7 @@ import { describe, expect, test } from "bun:test";
 import { isMacOS, tempDir } from "harness";
 import { join, resolve } from "node:path";
 
+import { binaryExpectations } from "../../scripts/build/binary-expectations.ts";
 import { binaryChecksWarnOnly, emitPostLink } from "../../scripts/build/bun.ts";
 import { resolveConfig, type Config, type PartialConfig, type Toolchain } from "../../scripts/build/config.ts";
 import { Ninja } from "../../scripts/build/ninja.ts";
@@ -106,6 +107,47 @@ describe("emitPostLink ninja ordering", () => {
     // A Windows target has nothing to strip: its `bun` is a copy.
     const strip = cfg.windows ? "copy_exe" : "strip";
     expect(buildEdge(out, strip)).toBe(`build bun${cfg.exeSuffix}: ${strip} bun-profile${cfg.exeSuffix}`);
+  });
+
+  test("disabling the smoke test preserves the static validations", () => {
+    using dir = tempDir("build-post-link", {});
+    const buildDir = String(dir);
+    const cfg = hostConfig({ buildType: "Release", smokeTest: false }, buildDir);
+    const n = new Ninja({ buildDir });
+    const exe = resolve(buildDir, `bun-profile${cfg.exeSuffix}`);
+    emitPostLink(n, cfg, exe, "bun-profile", [], [exe + ".o"]);
+    const out = n.toString();
+    expect(out).not.toContain("rule smoke_test");
+    expect(out).not.toContain("smoke-test-passed");
+    expect(buildEdge(out, "binary_verify")).toContain("bun-profile.binary-verified");
+    expect(buildEdge(out, "duplicate_symbols")).toContain("bun-profile.duplicate-symbols-checked");
+    expect(buildEdge(out, "phony")).toContain("build check: phony ");
+  });
+
+  test("compat-runtime checks retain GCC12 and glibc ceilings without a sysroot", () => {
+    using dir = tempDir("build-post-link", {});
+    const cfg = hostConfig({ buildType: "Release" }, String(dir));
+    const compat: Config = {
+      ...cfg,
+      os: "linux", linux: true, windows: false, darwin: false, freebsd: false,
+      arch: "x64", x64: true, arm64: false, abi: "gnu", sysroot: undefined,
+      dynamicLibstdcxx: true, systemDeps: new Set(["zstd"]),
+    };
+    const expected = binaryExpectations(compat);
+    expect(expected.maxSymbolVersions).toEqual({ GLIBC: "2.34", GLIBCXX: "3.4.30", CXXABI: "1.3.13", GCC: "12.0.0" });
+    expect(expected.neededLibs.allowed).toContain("libstdc++.so.6");
+    expect(expected.neededLibs.allowed).toContain("libgcc_s.so.1");
+    expect(expected.neededLibs.allowed).toContain("libzstd.so.1");
+    expect(expected.neededLibs.allowed).not.toContain("libdeflate.so.0");
+    expect(expected.forbiddenImports).not.toContain("__cxa_guard_*");
+    expect(expected.forbiddenImports).not.toContain("_Unwind_Resume");
+    expect(expected.forbiddenImports).toContain("__cxa_throw");
+    expect(binaryChecksWarnOnly(compat)).toBe(false);
+    const upstream = binaryExpectations({ ...compat, dynamicLibstdcxx: false, systemDeps: new Set() });
+    expect(upstream.maxSymbolVersions).toBeUndefined();
+    expect(upstream.neededLibs.allowed).not.toContain("libstdc++.so.6");
+    expect(upstream.neededLibs.allowed).not.toContain("libzstd.so.1");
+    expect(upstream.forbiddenImports).toContain("__cxa_guard_*");
   });
 
   // `ci` comes from the config alone (resolveConfig never reads the

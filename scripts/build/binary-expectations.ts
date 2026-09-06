@@ -261,7 +261,7 @@ function runtimeInitializers(cfg: Config): string[] {
  * Imports that would mean a toolchain feature bun builds without has crept
  * in. The C++ runtime is static on glibc/Android/Windows and libc++ is part
  * of the OS on macOS, so there the exception machinery must not be imported
- * at all; musl and FreeBSD load libstdc++/libc++ dynamically and legitimately
+ * at all; compat-runtime tiers, musl and FreeBSD load libstdc++/libc++ dynamically and legitimately
  * import guard/pure-virtual/typeid helpers from it, so only the throw path is
  * banned there. Emulated TLS and libatomic calls are banned everywhere.
  */
@@ -280,14 +280,14 @@ function forbiddenImports(cfg: Config): string[] {
     "__cxa_begin_catch",
     "__gxx_personality_*",
   );
-  if (cfg.darwin || (cfg.linux && cfg.abi !== "musl")) {
+  const dynamicCxxRuntime = cfg.linux && (cfg.abi === "musl" || (cfg.abi === "gnu" && cfg.dynamicLibstdcxx));
+  if (cfg.darwin || (cfg.linux && !dynamicCxxRuntime)) {
     // C++ runtime static (glibc, Android) or part of the OS (macOS): the
     // unwinder entry must not be imported either.
     forbidden.push("_Unwind_Resume");
   }
-  if (cfg.linux && cfg.abi !== "musl") {
-    // …nor the function-local-static guards (musl/FreeBSD/macOS take them
-    // from the shared libstdc++/libc++ legitimately).
+  if (cfg.linux && !dynamicCxxRuntime) {
+    // Shared C++ runtimes legitimately supply function-local-static guards.
     forbidden.push("__cxa_guard_*");
   }
   return forbidden;
@@ -350,6 +350,19 @@ export function shimExpectations(): BinaryExpectations {
   };
 }
 
+/** Sonames supplied by the Nix release tiers; adding a system dep requires an explicit ABI choice here. */
+const systemDepSonames: Readonly<Record<string, readonly string[]>> = {
+  zstd: ["libzstd.so.1"],
+  brotli: ["libbrotlidec.so.1", "libbrotlienc.so.1", "libbrotlicommon.so.1"],
+  libdeflate: ["libdeflate.so.0"],
+  zlib: ["libz.so.1"],
+  hdrhistogram: ["libhdr_histogram.so.6"],
+  highway: [], // The compat package supplies a static archive.
+  libspng: ["libspng.so.0"],
+  libwebp: ["libwebp.so.7", "libwebpmux.so.3", "libwebpdemux.so.2", "libsharpyuv.so.0"],
+  "libjpeg-turbo": ["libturbojpeg.so.0", "libjpeg.so.62"],
+};
+
 export function binaryExpectations(cfg: Config): BinaryExpectations {
   const format = binaryFormat(cfg);
   const src = (f: string) => join(cfg.cwd, "src", f);
@@ -370,7 +383,15 @@ export function binaryExpectations(cfg: Config): BinaryExpectations {
     cfg.webkit === "local" && cfg.linux && cfg.abi !== "android"
       ? ["libicudata.so.*", "libicui18n.so.*", "libicuuc.so.*"]
       : [];
-  const allowedLibs = [...sanitizerLibs, ...localWebKitLibs, ...(cfg.abi === "android" ? ["liblog.so"] : [])];
+  const compatRuntime = cfg.linux && cfg.abi === "gnu" && cfg.dynamicLibstdcxx;
+  const systemDepLibs = cfg.linux ? [...cfg.systemDeps].flatMap(name => systemDepSonames[name] ?? []) : [];
+  const allowedLibs = [
+    ...sanitizerLibs,
+    ...localWebKitLibs,
+    ...systemDepLibs,
+    ...(compatRuntime ? ["libstdc++.so.6", "libgcc_s.so.1"] : []),
+    ...(cfg.abi === "android" ? ["liblog.so"] : []),
+  ];
   const staticInitializers = cfg.asan ? undefined : runtimeInitializers(cfg);
 
   switch (format) {
@@ -395,7 +416,9 @@ export function binaryExpectations(cfg: Config): BinaryExpectations {
         if (!cfg.asan || cfg.arm64) neededLibs.push(cfg.x64 ? "ld-linux-x86-64.so.2" : "ld-linux-aarch64.so.1");
         // glibc 2.17 = RHEL 7 / Amazon Linux 2, the oldest distro generation
         // bun runs on.
-        maxSymbolVersions = { GLIBC: "2.17" };
+        maxSymbolVersions = compatRuntime
+          ? { GLIBC: "2.34", GLIBCXX: "3.4.30", CXXABI: "1.3.13", GCC: "12.0.0" }
+          : { GLIBC: "2.17" };
       } else if (musl) {
         // libstdc++/libgcc stay dynamic on musl on purpose: an N-API addon
         // built on Alpine links libstdc++.so.6, and it and bun must share one
@@ -420,7 +443,7 @@ export function binaryExpectations(cfg: Config): BinaryExpectations {
         format,
         exports: { versionScript: versionScriptPath(cfg), exact: [], patterns: [] },
         neededLibs: { names: neededLibs, exact: pinned, allowed: allowedLibs },
-        ...(pinned && { maxSymbolVersions, versionNames }),
+        ...((pinned || compatRuntime) && { maxSymbolVersions, versionNames }),
         forbiddenImports: forbiddenImports(cfg),
         ...(staticInitializers && { staticInitializers }),
         elf: {

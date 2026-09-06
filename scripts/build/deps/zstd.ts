@@ -35,11 +35,18 @@ export const zstd: Dependency = {
   name: "zstd",
   versionMacro: "ZSTD_HASH",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "facebook/zstd",
-    commit: ZSTD_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("zstd")) {
+      // <zstd.h> resolves from the toolchain default include path; the system
+      // shared lib (~600 KB) is shared across bun processes.
+      return { kind: "system", commit: ZSTD_COMMIT, linkFlags: ["-lzstd"], trackLibs: ["zstd"] };
+    }
+    return {
+      kind: "github-archive",
+      repo: "facebook/zstd",
+      commit: ZSTD_COMMIT,
+    };
+  },
 
   // x64 targets nehalem, so zstd picks its BMI2 kernels at run time and
   // probes CPUID in every CCtx/DCtx init. CPUID is a VM exit under a

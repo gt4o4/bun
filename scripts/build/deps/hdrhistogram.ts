@@ -15,11 +15,23 @@ const HDRHISTOGRAM_COMMIT = "18c7a324383dded1451d15621cd018b0048057d0";
 export const hdrhistogram: Dependency = {
   name: "hdrhistogram",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "HdrHistogram/HdrHistogram_c",
-    commit: HDRHISTOGRAM_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("hdrhistogram")) {
+      // nixpkgs ships hdrhistogram_c from THIS exact commit. <hdr/hdr_histogram.h>
+      // resolves from the toolchain default include path; .so is libhdr_histogram.so.6.
+      return {
+        kind: "system",
+        commit: HDRHISTOGRAM_COMMIT,
+        linkFlags: ["-lhdr_histogram"],
+        trackLibs: ["hdr_histogram"],
+      };
+    }
+    return {
+      kind: "github-archive",
+      repo: "HdrHistogram/HdrHistogram_c",
+      commit: HDRHISTOGRAM_COMMIT,
+    };
+  },
 
   // no-avx2-dispatch: the percentile scan's AVX2 path is selected with
   // __builtin_cpu_supports(), which links compiler-rt's cpu-model constructor

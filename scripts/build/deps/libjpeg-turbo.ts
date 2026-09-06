@@ -84,11 +84,22 @@ const cmakedefine = (truthy: boolean): [string, string] => ["#cmakedefine", trut
 export const libjpegTurbo: Dependency = {
   name: "libjpeg-turbo",
 
-  source: () => ({
-    kind: "github-archive",
-    repo: "libjpeg-turbo/libjpeg-turbo",
-    commit: LIBJPEG_TURBO_COMMIT,
-  }),
+  source: cfg => {
+    if (cfg.systemDeps.has("libjpeg-turbo")) {
+      // <turbojpeg.h> / <jpeglib.h> resolve from the toolchain default include path.
+      return {
+        kind: "system",
+        commit: LIBJPEG_TURBO_COMMIT,
+        linkFlags: ["-lturbojpeg", "-ljpeg"],
+        trackLibs: ["turbojpeg", "jpeg"],
+      };
+    }
+    return {
+      kind: "github-archive",
+      repo: "libjpeg-turbo/libjpeg-turbo",
+      commit: LIBJPEG_TURBO_COMMIT,
+    };
+  },
 
   // fatal-clears-warning.patch: after tj3DecompressHeader() and tj3Decompress8(),
   // TurboJPEG's warning flag stays set only for a call that ran to completion.

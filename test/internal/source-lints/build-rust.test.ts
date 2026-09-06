@@ -29,6 +29,7 @@ import {
   type Toolchain,
 } from "../../../scripts/build/config.ts";
 import { computeDepFlags, computeFlags } from "../../../scripts/build/flags.ts";
+import { profiles } from "../../../scripts/build/profiles.ts";
 import {
   allRustTargets,
   cargoBuildInvocation,
@@ -180,6 +181,27 @@ describe("build-std feature set", () => {
     expect(buildStdArgs(resolve(freebsdArm64))).toEqual([cargoBuildStdArg]);
     // A plain debug build: the link takes std's rlibs from the graph like every other crate's, so std is in it.
     expect(buildStdArgs(resolve({ ...linuxX64, buildType: "Debug", asan: false }))).toEqual([cargoBuildStdArg]);
+  });
+});
+
+describe("compat-runtime release tiers", () => {
+  test.each(["penryn", "nehalem", "haswell"] as const)("%s keeps the CPU target, std graph and wrapped linker", tier => {
+    const ld = "/fake/nix-compat/bin/ld";
+    const cfg = resolveConfig(
+      { ...profiles[`release-${tier}`], os: "linux", arch: "x64", abi: "gnu", linuxSysroot: "/fake" },
+      { ...mockToolchain, ld },
+    );
+    const invocation = cargoBuildInvocation(cfg);
+    const flags = computeFlags(cfg);
+    expect(invocation.args).toContain(cargoBuildStdArg);
+    expect(invocation.rustflags).toContain(`-Ctarget-cpu=${tier}`);
+    expect(invocation.rustflags).toContain("-Clinker-plugin-lto");
+    expect(flags.cxxflags).toContain(`-march=${tier}`);
+    expect(flags.ldflags).toContain(`--ld-path=${ld}`);
+    expect(flags.ldflags).toContain("-lstdc++");
+    expect(flags.ldflags).not.toContain("-static-libstdc++");
+    expect(cfg.ld).toBe(ld);
+    expect(cfg.baseline).toBe(tier !== "haswell");
   });
 });
 
