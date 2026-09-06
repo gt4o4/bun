@@ -560,3 +560,155 @@ extern "C" fn zig__ModuleInfoDeserialized__deinit(info: *mut ModuleInfoDeseriali
     // SAFETY: `info` is a valid, exclusively-owned pointer; `deinit` is its only destructor.
     unsafe { ModuleInfoDeserialized::deinit(info.as_ptr()) }
 }
+
+// ── ModuleInfo builder, driven from C++ ──
+// `bun build --already-bundled --format=esm` (BunAnalyzeTranspiledModule.cpp:
+// Bun__generateModuleInfoFromSourceCode) has JSC parse and analyze the verbatim
+// module source, then hands the resulting JSModuleRecord to the printer's
+// builder record by record — the inverse of
+// zig__ModuleInfoDeserialized__toJSModuleRecord. `fetch` is a bitcast
+// `FetchParameters` (u32::MAX none, −1 javascript, −2 webassembly, −3 json, or a
+// StringID for a host-defined type); `phase_defer` selects `import defer`.
+
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__create(is_typescript: bool) -> *mut ModuleInfo {
+    Box::into_raw(ModuleInfo::create(is_typescript))
+}
+
+/// For the C++ failure paths; the success path hands the pointer to
+/// `bun_jsc::cached_bytecode::generate_module_info_for_esm`, which re-boxes it.
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__destroy(mi: *mut ModuleInfo) {
+    if let Some(mi) = NonNull::new(mi) {
+        // SAFETY: produced by `zig__ModuleInfo__create` (`Box::into_raw`), owned by the caller.
+        drop(unsafe { Box::from_raw(mi.as_ptr()) });
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__str(mi: &mut ModuleInfo, ptr: *const u8, len: usize) -> u32 {
+    // SAFETY: C++ passes a `CString`'s data/length (WTF-8); `len == 0` may come with a null pointer.
+    let bytes: &[u8] = if len == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(ptr, len) }
+    };
+    mi.str(bytes).0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__requestModule(
+    mi: &mut ModuleInfo,
+    module_name: u32,
+    fetch: u32,
+    phase_defer: bool,
+) {
+    mi.request_module_with_phase(
+        StringID(module_name),
+        FetchParameters(fetch),
+        if phase_defer {
+            ModulePhase::Defer
+        } else {
+            ModulePhase::Evaluation
+        },
+    );
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__addImportInfoSingle(
+    mi: &mut ModuleInfo,
+    module_name: u32,
+    import_name: u32,
+    local_name: u32,
+    fetch: u32,
+    only_used_as_type: bool,
+) {
+    mi.add_import_info_single(
+        StringID(module_name),
+        StringID(import_name),
+        StringID(local_name),
+        FetchParameters(fetch),
+        only_used_as_type,
+    );
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__addImportInfoNamespace(
+    mi: &mut ModuleInfo,
+    module_name: u32,
+    local_name: u32,
+    fetch: u32,
+    phase_defer: bool,
+) {
+    if phase_defer {
+        mi.add_import_info_namespace_defer(
+            StringID(module_name),
+            StringID(local_name),
+            FetchParameters(fetch),
+        );
+    } else {
+        mi.add_import_info_namespace(
+            StringID(module_name),
+            StringID(local_name),
+            FetchParameters(fetch),
+        );
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__addExportInfoIndirect(
+    mi: &mut ModuleInfo,
+    export_name: u32,
+    import_name: u32,
+    module_name: u32,
+    fetch: u32,
+) {
+    mi.add_export_info_indirect(
+        StringID(export_name),
+        StringID(import_name),
+        StringID(module_name),
+        FetchParameters(fetch),
+    );
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__addExportInfoLocal(
+    mi: &mut ModuleInfo,
+    export_name: u32,
+    local_name: u32,
+) {
+    mi.add_export_info_local(StringID(export_name), StringID(local_name));
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__addExportInfoNamespace(
+    mi: &mut ModuleInfo,
+    export_name: u32,
+    module_name: u32,
+    fetch: u32,
+) {
+    mi.add_export_info_namespace(
+        StringID(export_name),
+        StringID(module_name),
+        FetchParameters(fetch),
+    );
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__addExportInfoStar(
+    mi: &mut ModuleInfo,
+    module_name: u32,
+    fetch: u32,
+) {
+    mi.add_export_info_star(StringID(module_name), FetchParameters(fetch));
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn zig__ModuleInfo__setFlags(
+    mi: &mut ModuleInfo,
+    contains_import_meta: bool,
+    has_tla: bool,
+) {
+    mi.flags.contains_import_meta = contains_import_meta;
+    mi.flags.has_tla = has_tla;
+}

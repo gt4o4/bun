@@ -981,11 +981,15 @@ impl TranspilerJob {
             let is_commonjs_module = already_bundled.is_common_js();
             let bytecode_cache =
                 crate::resolved_source::Bytecode::owned(already_bundled.into_bytecode());
+            // `.modinfo` sidecar (ESM only): the provider becomes a
+            // BunTranspiledModule and skips the analysis parse.
+            let module_info = parse_result.already_bundled_module_info.take();
             self.resolved_source = ResolvedSource {
                 source_code: String::clone_latin1(&parse_result.source.contents),
                 already_bundled: true,
                 bytecode_cache,
                 is_commonjs_module,
+                module_info,
                 tag: this_tag,
                 ..Default::default()
             };

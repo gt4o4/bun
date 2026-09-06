@@ -23,6 +23,14 @@ pub mod result;
 pub mod thread_id;
 pub mod tty;
 pub mod util;
+
+/// Sidecars the runtime looks for next to a module whose first line is
+/// `// @bun @bytecode`: the JSC bytecode cache, and for ESM the serialized
+/// module_info (`bun build --already-bundled --format=esm`). Both are keyed on
+/// the module's bytes as the runtime reads them (Latin-1), so they only ever
+/// pair with the exact file they were generated from.
+pub const BYTECODE_EXTENSION: &str = ".jsc";
+pub const MODULE_INFO_EXTENSION: &str = ".modinfo";
 pub use atomic_cell::{Atom, AtomicCell, ThreadCell};
 
 /// Shared state-machine tag for the streaming (de)compressors in

@@ -210,6 +210,10 @@ pub struct BundlerOptions {
     pub output_format: bundle_enums::Format,
     pub bytecode: bool,
     pub bytecode_depth: u32,
+    /// `bun build --already-bundled`: the entry points are already-bundled
+    /// modules; skip parsing/transforming and only emit their bytecode
+    /// caches (`.jsc`) and, for ESM, module_info sidecars (`.modinfo`).
+    pub already_bundled: bool,
     pub banner: Box<[u8]>,
     pub footer: Box<[u8]>,
     pub css_chunking: bool,
@@ -270,6 +274,7 @@ impl Default for BundlerOptions {
             output_format: bundle_enums::Format::Esm,
             bytecode: false,
             bytecode_depth: u32::MAX,
+            already_bundled: false,
             banner: Box::default(),
             footer: Box::default(),
             css_chunking: false,
