@@ -203,6 +203,64 @@ describe("bun build --already-bundled", () => {
     expect(exit).toBe(0);
   }, 30_000);
 
+  test("module_info stands alone: used without a .jsc, and a wrong one breaks linking", async () => {
+    const dep = `// @bun @bytecode\nexport const a = 1;\n`;
+    const mod = `// @bun @bytecode\nimport { a } from "./dep.js";\nexport const b = a + 1;\n`;
+    using dir = tempDir("already-bundled-modinfo-alone", {
+      "dep.js": dep,
+      "mod.js": mod,
+      "consumer.js": `import { b } from "./out/mod.js"; console.log("b", b);`,
+    });
+    await using build = Bun.spawn({
+      cmd: [
+        bunExe(),
+        "build",
+        "--already-bundled",
+        "--bytecode",
+        "--target=bun",
+        "--format=esm",
+        "--outdir",
+        join(String(dir), "out"),
+        join(String(dir), "dep.js"),
+        join(String(dir), "mod.js"),
+      ],
+      env: bunEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await build.exited).toBe(0);
+    // Drop the bytecode: module_info alone must still be consumed.
+    const { unlink, rename } = await import("node:fs/promises");
+    await unlink(join(String(dir), "out", "dep.js.jsc"));
+    await unlink(join(String(dir), "out", "mod.js.jsc"));
+
+    await using ok = Bun.spawn({
+      cmd: [bunExe(), join(String(dir), "consumer.js")],
+      env: bunEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [okOut, , okExit] = await Promise.all([ok.stdout.text(), ok.stderr.text(), ok.exited]);
+    expect(okOut.trim()).toBe("b 2");
+    expect(okExit).toBe(0);
+
+    // Swap the sidecars: mod.js now carries dep.js's record (no `b` export),
+    // so the import must fail to link — proof the record is what gets used.
+    const outDir = join(String(dir), "out");
+    await rename(join(outDir, "dep.js.modinfo"), join(outDir, "tmp.modinfo"));
+    await rename(join(outDir, "mod.js.modinfo"), join(outDir, "dep.js.modinfo"));
+    await rename(join(outDir, "tmp.modinfo"), join(outDir, "mod.js.modinfo"));
+    await using bad = Bun.spawn({
+      cmd: [bunExe(), join(String(dir), "consumer.js")],
+      env: bunEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [, badErr, badExit] = await Promise.all([bad.stdout.text(), bad.stderr.text(), bad.exited]);
+    expect(badExit).not.toBe(0);
+    expect(badErr).toMatch(/SyntaxError/);
+  }, 30_000);
+
   test("warns when the input lacks the // @bun pragma", async () => {
     using dir = tempDir("already-bundled-no-pragma", {
       "input.js": `export const x = 1;\n`,

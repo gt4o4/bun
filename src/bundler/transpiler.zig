@@ -977,16 +977,14 @@ pub const Transpiler = struct {
                                 if (this_parse.virtual_source == null and this_parse.allow_bytecode_cache) {
                                     var path_buf2: bun.PathBuffer = undefined;
                                     @memcpy(path_buf2[0..path.text.len], path.text);
-                                    path_buf2[path.text.len..][0..bun.bytecode_extension.len].* = bun.bytecode_extension.*;
                                     const dir_fd = dirname_fd.unwrapValid() orelse bun.FD.cwd();
-                                    const bytecode = bun.sys.File.toSourceAt(dir_fd, path_buf2[0 .. path.text.len + bun.bytecode_extension.len], bun.default_allocator, .{}).asValue() orelse break :brk default_value;
-                                    if (bytecode.contents.len == 0) {
-                                        break :brk default_value;
-                                    }
                                     if (already_bundled == .bytecode) {
                                         // ESM: a module_info sidecar (`bun build --already-bundled
-                                        // --format=esm`) lets JSC skip the module-analysis parse
-                                        // too — the same record the standalone graph embeds.
+                                        // --format=esm`) lets JSC skip the module-analysis parse —
+                                        // the same record the standalone graph embeds.  Read
+                                        // independently of the .jsc: it stands on its own (as the
+                                        // runtime transpiler cache's esm_record does) and is the
+                                        // larger of the two wins, at a fraction of the size.
                                         path_buf2[path.text.len..][0..bun.module_info_extension.len].* = bun.module_info_extension.*;
                                         if (bun.sys.File.toSourceAt(dir_fd, path_buf2[0 .. path.text.len + bun.module_info_extension.len], bun.default_allocator, .{}).asValue()) |record| {
                                             defer bun.default_allocator.free(record.contents);
@@ -994,6 +992,11 @@ pub const Transpiler = struct {
                                                 module_info = analyze_transpiled_module.ModuleInfoDeserialized.createFromCachedRecord(record.contents, bun.default_allocator);
                                             }
                                         }
+                                    }
+                                    path_buf2[path.text.len..][0..bun.bytecode_extension.len].* = bun.bytecode_extension.*;
+                                    const bytecode = bun.sys.File.toSourceAt(dir_fd, path_buf2[0 .. path.text.len + bun.bytecode_extension.len], bun.default_allocator, .{}).asValue() orelse break :brk default_value;
+                                    if (bytecode.contents.len == 0) {
+                                        break :brk default_value;
                                     }
                                     break :brk if (already_bundled == .bytecode_cjs) .{ .bytecode_cjs = @constCast(bytecode.contents) } else .{ .bytecode = @constCast(bytecode.contents) };
                                 }
