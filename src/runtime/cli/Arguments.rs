@@ -434,6 +434,9 @@ pub(crate) const BUILD_ONLY_PARAMS: &[ParamType] = concat_params!(
             "--bytecode-depth <NUMBER>        How many levels of nested functions to compile to bytecode ahead of time. Defaults to all"
         ),
         parse_param!(
+            "--already-bundled                Treat the entry points as already-bundled modules: copy them verbatim and only emit .jsc bytecode caches (and .modinfo for --format=esm). Requires --bytecode"
+        ),
+        parse_param!(
             "--watch                          Automatically restart the process on file change"
         ),
         parse_param!(
@@ -2033,6 +2036,7 @@ fn parse_build_command_options(
 ) {
     ctx.bundler_options.transform_only = args.flag(b"--no-bundle");
     ctx.bundler_options.bytecode = args.flag(b"--bytecode");
+    ctx.bundler_options.already_bundled = args.flag(b"--already-bundled");
     if let Some(depth) = args.option(b"--bytecode-depth") {
         ctx.bundler_options.bytecode_depth = match strings::parse_int::<u32>(depth, 10) {
             Ok(v) => v,
@@ -2537,7 +2541,12 @@ fn parse_build_command_options(
             // ESM bytecode requires --compile because module_info (import/export metadata)
             // is only available in compiled binaries. Without it, JSC must parse the file
             // twice (once for module analysis, once for bytecode), which is a deopt.
-            if format == options::Format::Esm && !ctx.bundler_options.compile {
+            // `--already-bundled` is the other producer of module_info: it writes a
+            // `.modinfo` sidecar next to the `.jsc`, so the runtime skips that parse too.
+            if format == options::Format::Esm
+                && !ctx.bundler_options.compile
+                && !ctx.bundler_options.already_bundled
+            {
                 Output::err_generic(
                     "ESM bytecode requires --compile. Use --format=cjs for bytecode without --compile.",
                     (),

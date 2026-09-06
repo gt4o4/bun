@@ -546,7 +546,7 @@ pub mod analyze_transpiled_module {
             self.record_kinds.push(kind);
             self.buffer.extend_from_slice(data);
         }
-        pub(crate) fn add_import_info_single(
+        pub fn add_import_info_single(
             &mut self,
             module_name: StringID,
             import_name: StringID,
@@ -568,7 +568,7 @@ pub mod analyze_transpiled_module {
                 ],
             );
         }
-        pub(crate) fn add_import_info_namespace(
+        pub fn add_import_info_namespace(
             &mut self,
             module_name: StringID,
             local_name: StringID,
@@ -584,7 +584,7 @@ pub mod analyze_transpiled_module {
                 ],
             );
         }
-        pub(crate) fn add_import_info_namespace_defer(
+        pub fn add_import_info_namespace_defer(
             &mut self,
             module_name: StringID,
             local_name: StringID,
@@ -600,7 +600,7 @@ pub mod analyze_transpiled_module {
                 ],
             );
         }
-        pub(crate) fn add_export_info_indirect(
+        pub fn add_export_info_indirect(
             &mut self,
             export_name: StringID,
             import_name: StringID,
@@ -620,7 +620,7 @@ pub mod analyze_transpiled_module {
                 ],
             );
         }
-        pub(crate) fn add_export_info_local(
+        pub fn add_export_info_local(
             &mut self,
             export_name: StringID,
             local_name: StringID,
@@ -638,7 +638,7 @@ pub mod analyze_transpiled_module {
                 ],
             );
         }
-        pub(crate) fn add_export_info_namespace(
+        pub fn add_export_info_namespace(
             &mut self,
             export_name: StringID,
             module_name: StringID,
@@ -652,7 +652,7 @@ pub mod analyze_transpiled_module {
                 &[export_name, module_name, StringID(fetch_parameters.0)],
             );
         }
-        pub(crate) fn add_export_info_star(
+        pub fn add_export_info_star(
             &mut self,
             module_name: StringID,
             fetch_parameters: FetchParameters,
@@ -702,7 +702,7 @@ pub mod analyze_transpiled_module {
             );
         }
 
-        pub(crate) fn request_module_with_phase(
+        pub fn request_module_with_phase(
             &mut self,
             import_record_path: StringID,
             fetch_parameters: FetchParameters,

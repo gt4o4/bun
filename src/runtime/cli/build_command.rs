@@ -43,6 +43,224 @@ fn splat_byte_all(
 
 pub(crate) struct BuildCommand;
 
+/// `<base><ext>` as a NUL-terminated path in `buf`; `None` when it would not fit.
+fn sidecar_path<'b>(buf: &'b mut PathBuffer, base: &[u8], ext: &str) -> Option<&'b bun_core::ZStr> {
+    let total = base.len() + ext.len();
+    if total >= buf.len() {
+        return None;
+    }
+    buf[..base.len()].copy_from_slice(base);
+    buf[base.len()..total].copy_from_slice(ext.as_bytes());
+    buf[total] = 0;
+    Some(bun_core::ZStr::from_buf(&buf[..], total))
+}
+
+fn size_of(n: usize) -> bun_fmt::SizeFormatter {
+    bun_fmt::size(
+        n,
+        bun_fmt::SizeFormatterOptions {
+            space_between_number_and_unit: true,
+        },
+    )
+}
+
+/// `bun build --already-bundled`: the entry points are already-bundled modules —
+/// the shapes `bun build --bytecode` itself emits (the `// @bun @bytecode
+/// @bun-cjs` CJS wrapper, or `// @bun @bytecode` ESM chunks as extracted from a
+/// compiled binary). Nothing is parsed or transformed: each file is copied
+/// verbatim into the output directory and a JSC bytecode cache for those exact
+/// bytes is written beside it as `<name>.jsc`. For `--format=esm` a
+/// `<name>.modinfo` sidecar is written too — bun's serialized module_info,
+/// analyzed by JSC from the same bytes — so the runtime can build the module
+/// record without parsing: the other half of what a `--compile` binary gets.
+#[cold]
+#[inline(never)]
+fn exec_already_bundled(ctx: Context) -> Result<(), crate::Error> {
+    use bun_core::BStr;
+
+    let opts = &ctx.bundler_options;
+    if !opts.bytecode {
+        Output::err_generic(
+            "--already-bundled requires --bytecode (the only thing it produces is a .jsc cache)",
+            (),
+        );
+        Global::exit(1);
+    }
+    if opts.compile {
+        Output::err_generic("--already-bundled does not support --compile yet", ());
+        Global::exit(1);
+    }
+    if !matches!(
+        opts.output_format,
+        options::Format::Cjs | options::Format::Esm
+    ) {
+        Output::err_generic(
+            "--already-bundled requires --format=cjs or --format=esm",
+            (),
+        );
+        Global::exit(1);
+    }
+
+    let entry_points: &[Box<[u8]>] = &ctx.args.entry_points;
+    if entry_points.is_empty() {
+        Output::err_generic("--already-bundled requires at least one entry point", ());
+        Global::exit(1);
+    }
+
+    let has_outdir = !opts.outdir.is_empty();
+    let has_outfile = !opts.outfile.is_empty();
+    if !has_outdir && !has_outfile {
+        Output::err_generic("--already-bundled requires --outdir or --outfile", ());
+        Global::exit(1);
+    }
+    if has_outfile && entry_points.len() != 1 {
+        Output::err_generic(
+            "--outfile cannot be used with multiple entry points; use --outdir",
+            (),
+        );
+        Global::exit(1);
+    }
+
+    if has_outdir {
+        if let Err(err) = bun_sys::Dir::cwd().make_path(&opts.outdir) {
+            Output::err_generic(
+                "failed to create --outdir {}: {}",
+                (BStr::new(&opts.outdir[..]), err),
+            );
+            Global::exit(1);
+        }
+    }
+
+    let is_esm = opts.output_format == options::Format::Esm;
+    for entry in entry_points {
+        let source = match bun_sys::File::read_from(Fd::cwd(), entry) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                Output::err_generic("failed to read {}: {}", (BStr::new(&entry[..]), err));
+                Global::exit(1);
+            }
+        };
+
+        let mut js_path_buf = PathBuffer::uninit();
+        let out_js_path: &bun_core::ZStr = if has_outfile {
+            resolve_path::join_string_buf_z::<bun_paths::platform::Auto>(
+                &mut js_path_buf[..],
+                &[&opts.outfile[..]],
+            )
+        } else {
+            resolve_path::join_string_buf_z::<bun_paths::platform::Auto>(
+                &mut js_path_buf[..],
+                &[&opts.outdir[..], resolve_path::basename(&entry[..])],
+            )
+        };
+        let out_js = out_js_path.as_bytes();
+
+        // The runtime only consults sidecars for sources that open with the
+        // `// @bun` pragma (`// @bun @bytecode` for ESM, `// @bun @bytecode
+        // @bun-cjs` for the CJS wrapper shape); anything else gets a cache
+        // nobody reads. The source is copied verbatim, so warn rather than
+        // rewrite.
+        if !source.starts_with(b"// @bun") {
+            bun_core::warn!(
+                "{} does not start with a `// @bun` pragma; the runtime will not look for its .jsc\n",
+                BStr::new(&entry[..])
+            );
+        }
+
+        let mut jsc_path_buf = PathBuffer::uninit();
+        let Some(jsc_path) = sidecar_path(&mut jsc_path_buf, out_js, bun_core::BYTECODE_EXTENSION)
+        else {
+            Output::err_generic("output path too long: {}", (BStr::new(out_js),));
+            Global::exit(1);
+        };
+
+        // Source URL: the bundler uses "<rel>.jsc" — the value isn't part of
+        // the bytecode hash check at runtime, but we match for symmetry with
+        // the existing `bun build --bytecode` output.
+        let source_provider_url = bun_core::String::create_format(format_args!(
+            "{}{}",
+            BStr::new(out_js),
+            bun_core::BYTECODE_EXTENSION
+        ));
+
+        // Same generator as the bundler's `.jsc` output (JSC init, CJS depth+1 rule).
+        let Some(bytecode) = bundle_v2::dispatch::generate_cached_bytecode(
+            opts.output_format,
+            &source,
+            &source_provider_url,
+            opts.bytecode_depth,
+            None,
+        ) else {
+            Output::err_generic(
+                "failed to generate bytecode for {} (parse error in source, or format mismatch: --format must match the file's module shape)",
+                (BStr::new(&entry[..]),),
+            );
+            Global::exit(1);
+        };
+
+        if let Err(err) = bun_sys::File::write_file(Fd::cwd(), out_js_path, &source) {
+            Output::err_generic("failed to write {}: {}", (BStr::new(out_js), err));
+            Global::exit(1);
+        }
+        if let Err(err) = bun_sys::File::write_file(Fd::cwd(), jsc_path, &bytecode) {
+            Output::err_generic(
+                "failed to write {}: {}",
+                (BStr::new(jsc_path.as_bytes()), err),
+            );
+            Global::exit(1);
+        }
+        bun_core::prettyln!(
+            "  <green>{}<r>  <d>{}<r>",
+            BStr::new(out_js),
+            size_of(source.len())
+        );
+        bun_core::prettyln!(
+            "  <green>{}<r>  <d>{}<r>",
+            BStr::new(jsc_path.as_bytes()),
+            size_of(bytecode.len())
+        );
+
+        // ESM: also emit the module_info sidecar — the import/export/requested-
+        // module record, analyzed by JSC from these exact bytes — so the runtime
+        // can build the module record without parsing. CJS has no module record
+        // and needs none.
+        if is_esm {
+            let Some(module_info) = bun_jsc::cached_bytecode::generate_module_info_for_esm(
+                &source,
+                &source_provider_url,
+            ) else {
+                Output::err_generic(
+                    "failed to analyze {} for module_info (not valid ESM?)",
+                    (BStr::new(&entry[..]),),
+                );
+                Global::exit(1);
+            };
+            let mut mi_path_buf = PathBuffer::uninit();
+            let Some(mi_path) =
+                sidecar_path(&mut mi_path_buf, out_js, bun_core::MODULE_INFO_EXTENSION)
+            else {
+                Output::err_generic("output path too long: {}", (BStr::new(out_js),));
+                Global::exit(1);
+            };
+            if let Err(err) = bun_sys::File::write_file(Fd::cwd(), mi_path, &module_info) {
+                Output::err_generic(
+                    "failed to write {}: {}",
+                    (BStr::new(mi_path.as_bytes()), err),
+                );
+                Global::exit(1);
+            }
+            bun_core::prettyln!(
+                "  <green>{}<r>  <d>{}<r>",
+                BStr::new(mi_path.as_bytes()),
+                size_of(module_info.len())
+            );
+        }
+    }
+
+    Output::flush();
+    Ok(())
+}
+
 impl BuildCommand {
     /// `bun build` subcommand entry point.
     ///
@@ -71,6 +289,10 @@ impl BuildCommand {
         if ctx.bundler_options.compile || ctx.bundler_options.bytecode {
             // set this early so that externals are set up correctly and define is right
             ctx.args.target = Some(api::Target::Bun);
+        }
+
+        if ctx.bundler_options.already_bundled {
+            return exec_already_bundled(ctx);
         }
 
         if ctx.bundler_options.bake {

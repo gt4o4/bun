@@ -2856,12 +2856,16 @@ fn transpile_source_code_inner(
                     let already_bundled = core::mem::take(&mut parse_result.already_bundled);
                     let is_commonjs_module = already_bundled.is_common_js();
                     let bytecode_cache = Bytecode::owned(already_bundled.into_bytecode());
+                    // `.modinfo` sidecar (ESM only): the provider becomes a
+                    // BunTranspiledModule and skips the analysis parse.
+                    let module_info = parse_result.already_bundled_module_info.take();
                     return Ok(ResolvedSource {
                         source_code: bun_core::String::clone_latin1(&source.contents),
                         source_url: input_specifier.create_if_different(path.text),
                         already_bundled: true,
                         bytecode_cache,
                         is_commonjs_module,
+                        module_info,
                         ..Default::default()
                     });
                 }

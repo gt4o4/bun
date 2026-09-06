@@ -119,6 +119,35 @@ unsafe extern "C" {
 
     /// InternalModuleRegistry.cpp: this executable's builtins section (`bun_exe_format::builtins` layout).
     fn Bun__builtinsSection(length: *mut usize) -> *const u8;
+
+    /// BunAnalyzeTranspiledModule.cpp: JSC-parse `input_code` as a module on the
+    /// bytecode-cache VM and build the printer's `ModuleInfo` from the record.
+    /// Null when the source is not valid ESM.
+    fn Bun__generateModuleInfoFromSourceCode(
+        source_provider_url: &BunString,
+        input_code: &BunString,
+    ) -> *mut core::ffi::c_void;
+}
+
+/// `bun build --already-bundled --format=esm`: the serialized module_info for a
+/// pre-built ESM module — the import/export/requested-module record JSC derives
+/// from these exact bytes — so the runtime's source provider can build the
+/// module record without an analysis parse (the other half of what a
+/// `--compile` binary gets). The source is decoded as Latin-1, the same way the
+/// runtime reads a module with a loose `.jsc` next to it.
+pub fn generate_module_info_for_esm(
+    input: &[u8],
+    source_provider_url: &BunString,
+) -> Option<Box<[u8]>> {
+    crate::initialize(crate::InitializeOptions::default());
+    let source = BunString::clone_latin1(input);
+    // SAFETY: both strings are live for the call; C++ returns null or a
+    // `zig__ModuleInfo__create` box whose ownership passes to us.
+    let raw = unsafe { Bun__generateModuleInfoFromSourceCode(source_provider_url, &source) };
+    let ptr = NonNull::new(raw)?.cast::<bun_js_printer::analyze_transpiled_module::ModuleInfo>();
+    // SAFETY: non-null → produced by `Box::into_raw` in `zig__ModuleInfo__create`.
+    let mut mi = unsafe { Box::from_raw(ptr.as_ptr()) };
+    bun_js_printer::serialize_module_info(Some(&mut mi))
 }
 
 /// `input` (WTF-8, non-ASCII from `first_non_ascii`) as a UTF-16 string JSC owns, written in place.
