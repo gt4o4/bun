@@ -218,3 +218,8 @@ src/jsc/bindings/GeneratedBindings.zig
 
 # hawk analysis scaffolding (see tools/hawk/); generated per-run, never committed
 src/runtime/hawk_root.rs
+
+# Nix (fork): build symlinks; flake.lock is owned by the consuming flake (nix-configs)
+result
+result-*
+flake.lock
