@@ -809,8 +809,8 @@ fn execAlreadyBundled(ctx: Command.Context) !void {
         Output.errGeneric("--already-bundled does not support --compile yet", .{});
         Global.exit(1);
     }
-    if (opts.output_format != .cjs) {
-        Output.errGeneric("--already-bundled requires --format=cjs (ESM bytecode without --compile is unsupported)", .{});
+    if (opts.output_format != .cjs and opts.output_format != .esm) {
+        Output.errGeneric("--already-bundled requires --format=cjs or --format=esm", .{});
         Global.exit(1);
     }
 
@@ -838,7 +838,7 @@ fn execAlreadyBundled(ctx: Command.Context) !void {
         };
     }
 
-    // Bring up just enough JSC to call generateForCJS:
+    // Bring up just enough JSC to call generateForCJS / generateForESM:
     //   - flag the thread so WTFTimer__create no-ops (no event loop here),
     //   - run JSCInitialize so options are finalized before getVMForBytecodeCache().
     // Mirrors the regular bundler bytecode pass at
@@ -877,14 +877,26 @@ fn execAlreadyBundled(ctx: Command.Context) !void {
         jsc_path_buf[out_js_path.len + bun.bytecode_extension.len] = 0;
         const jsc_path: [:0]const u8 = jsc_path_buf[0 .. out_js_path.len + bun.bytecode_extension.len :0];
 
+        // The runtime only consults a .jsc sibling for sources that open with
+        // the `// @bun` pragma (`// @bun @bytecode` for ESM, `// @bun @bytecode
+        // @bun-cjs` for the CJS wrapper shape); anything else gets a cache
+        // nobody reads.  The source is copied verbatim, so warn rather than
+        // rewrite.
+        if (!bun.strings.hasPrefixComptime(source, "// @bun")) {
+            Output.prettyErrorln("<r><yellow>warn<r>: {s} does not start with a `// @bun` pragma; the runtime will not look for its .jsc", .{entry_point});
+        }
+
         // Source URL: bundler uses "<rel>.jsc" — the value isn't part of the
         // bytecode hash check at runtime, but we match for symmetry with the
         // existing `bun build --bytecode` output.
         var source_provider_url = bun.String.cloneUTF8(jsc_path);
         defer source_provider_url.deref();
 
-        const result = bun.jsc.CachedBytecode.generateForCJS(&source_provider_url, source) orelse {
-            Output.errGeneric("failed to generate bytecode for {s} (parse error in source?)", .{entry_point});
+        // ESM goes through the module code-block generator (same one --compile
+        // uses); the runtime still parses ESM once for module analysis, since no
+        // module_info accompanies a loose .jsc, but skips the codegen parse.
+        const result = bun.jsc.CachedBytecode.generate(opts.output_format, source, &source_provider_url) orelse {
+            Output.errGeneric("failed to generate bytecode for {s} (parse error in source, or format mismatch: --format must match the file's module shape)", .{entry_point});
             Global.exit(1);
         };
         const bytecode = result[0];

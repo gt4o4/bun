@@ -174,7 +174,7 @@ pub const build_only_params = [_]ParamType{
     clap.parseParam("--no-compile-autoload-package-json Disable autoloading of package.json at runtime in standalone executable") catch unreachable,
     clap.parseParam("--compile-executable-path <STR>  Path to a Bun executable to use for cross-compilation instead of downloading") catch unreachable,
     clap.parseParam("--bytecode                       Use a bytecode cache") catch unreachable,
-    clap.parseParam("--already-bundled                Skip parsing/transforming entry points and only emit a bytecode cache (.jsc) for each. Requires --bytecode --target=bun --format=cjs.") catch unreachable,
+    clap.parseParam("--already-bundled                Skip parsing/transforming entry points and only emit a bytecode cache (.jsc) for each. Requires --bytecode --target=bun and --format=cjs or esm; inputs should carry the // @bun @bytecode pragma the runtime keys on.") catch unreachable,
     clap.parseParam("--watch                          Automatically restart the process on file change") catch unreachable,
     clap.parseParam("--no-clear-screen                Disable clearing the terminal screen on reload when --watch is enabled") catch unreachable,
     clap.parseParam("--target <STR>                   The intended execution environment for the bundle. \"browser\", \"bun\" or \"node\"") catch unreachable,
@@ -1478,7 +1478,10 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
                 // ESM bytecode requires --compile because module_info (import/export metadata)
                 // is only available in compiled binaries. Without it, JSC must parse the file
                 // twice (once for module analysis, once for bytecode), which is a deopt.
-                if (format == .esm and !ctx.bundler_options.compile) {
+                // --already-bundled opts into that deopt knowingly: it re-emits a .jsc for
+                // pre-built ESM (e.g. chunks extracted from a compiled binary), where the
+                // cache still skips codegen and the second parse.
+                if (format == .esm and !ctx.bundler_options.compile and !ctx.bundler_options.already_bundled) {
                     Output.errGeneric("ESM bytecode requires --compile. Use --format=cjs for bytecode without --compile.", .{});
                     Global.exit(1);
                 }
