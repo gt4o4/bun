@@ -197,3 +197,8 @@ scripts/lldb-inline
 
 test/integration/bun-types/fixture/bun.lock
 .claude/scheduled_tasks.lock
+
+# No lock here on purpose: the consuming nix-configs flake locks our inputs
+# (`inputs.bun.inputs.*.follows`); nix would otherwise write and `git add`
+# one whenever this flake is evaluated directly, dirtying the tree.
+flake.lock
