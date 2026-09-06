@@ -1465,7 +1465,7 @@ pub mod bv2_impl {
         }
 
         /// Opaque `JSC::EncoderStringTable` — one instance shared by every chunk's `encodeCodeBlock` in a `--compile --bytecode` build.
-        pub(crate) enum EncoderStringTable {}
+        pub enum EncoderStringTable {}
         /// Opaque `JSC::BytecodeLinkEncoder` — every chunk of a `--compile --bytecode` link encoded into one payload (`bytecode_order`).
         pub(crate) enum BytecodeLinkEncoder {}
 
@@ -1594,7 +1594,7 @@ pub mod bv2_impl {
         /// Bytecode generation entry point for the linker: marks the calling
         /// thread as bundler-for-bytecode-cache, initializes JSC, and generates.
         #[inline]
-        pub(crate) fn generate_cached_bytecode(
+        pub fn generate_cached_bytecode(
             format: crate::options_impl::Format,
             source: &[u8],
             source_provider_url: &bun_core::String,

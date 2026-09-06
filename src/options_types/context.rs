@@ -213,6 +213,10 @@ pub struct BundlerOptions {
     pub optimize_bytecode: bool,
     /// `--bytecode-order`: payload order files, most important first.
     pub bytecode_order: Vec<Box<[u8]>>,
+    /// `bun build --already-bundled`: the entry points are already-bundled
+    /// modules; skip parsing/transforming and only emit their bytecode
+    /// caches (`.jsc`) and, for ESM, module_info sidecars (`.modinfo`).
+    pub already_bundled: bool,
     pub banner: Box<[u8]>,
     pub footer: Box<[u8]>,
     pub css_chunking: bool,
@@ -277,6 +281,7 @@ impl Default for BundlerOptions {
             bytecode_depth: u32::MAX,
             optimize_bytecode: true,
             bytecode_order: Vec::new(),
+            already_bundled: false,
             banner: Box::default(),
             footer: Box::default(),
             css_chunking: false,

@@ -866,6 +866,12 @@ pub struct ParseResult<'a> {
     pub loader: options::Loader,
     pub ast: bun_ast::Ast<'a>,
     pub already_bundled: AlreadyBundled,
+    /// `<path>.modinfo` next to a `// @bun @bytecode` ESM module (`bun build
+    /// --already-bundled --format=esm`): its serialized module_info, loaded
+    /// independently of the `.jsc`, so the source provider can build the module
+    /// record without an analysis parse.
+    pub already_bundled_module_info:
+        Option<Box<crate::analyze_transpiled_module::ModuleInfoDeserialized>>,
     pub empty: bool,
     // `PendingResolution` does not yet
     // derive `MultiArrayElement` (lives in `bun_resolver`, derive macro is in
@@ -907,6 +913,7 @@ impl<'a> ParseResult<'a> {
             loader: options::Loader::File,
             ast: bun_ast::Ast::empty_in(arena),
             already_bundled: Default::default(),
+            already_bundled_module_info: None,
             empty: true,
             pending_imports: Default::default(),
             runtime_transpiler_cache: None,
@@ -928,6 +935,7 @@ impl<'a> ParseResult<'a> {
             loader,
             ast: bun_ast::Ast::empty_in(arena),
             already_bundled: AlreadyBundled::None,
+            already_bundled_module_info: None,
             empty: true,
             pending_imports: Default::default(),
             runtime_transpiler_cache: None,
@@ -1691,6 +1699,7 @@ impl<'a> Transpiler<'a> {
                         loader,
                         runtime_transpiler_cache: rtc_ptr,
                         already_bundled: AlreadyBundled::None,
+                        already_bundled_module_info: None,
                         pending_imports: Default::default(),
                         empty: false,
                         source_contents_backing: source_backing,
@@ -1701,13 +1710,18 @@ impl<'a> Transpiler<'a> {
                         source: source.clone(),
                         loader,
                         already_bundled: AlreadyBundled::None,
+                        already_bundled_module_info: None,
                         pending_imports: Default::default(),
                         empty: false,
                         source_contents_backing: source_backing,
                     },
-                    js_ast::Result::AlreadyBundled(already_bundled) => ParseResult {
-                        ast: bun_ast::Ast::empty_in(arena),
-                        already_bundled: match already_bundled {
+                    js_ast::Result::AlreadyBundled(already_bundled) => {
+                        // `<path>.modinfo` (ESM only): loaded independently of
+                        // the `.jsc` — a module_info alone still spares the
+                        // analysis parse. Corrupt/truncated → `None` → the
+                        // provider falls back to parsing.
+                        let mut already_bundled_module_info = None;
+                        let already_bundled = match already_bundled {
                             js_ast::AlreadyBundled::Bun => AlreadyBundled::SourceCode,
                             js_ast::AlreadyBundled::BunCjs => AlreadyBundled::SourceCodeCjs,
                             js_ast::AlreadyBundled::BytecodeCjs
@@ -1727,11 +1741,35 @@ impl<'a> Transpiler<'a> {
                                 if this_parse.virtual_source.is_none()
                                     && this_parse.allow_bytecode_cache
                                 {
-                                    // No shared const for the bytecode extension
-                                    // in `bun_core` yet, so inline the literal.
-                                    const BYTECODE_EXT: &[u8] = b".jsc";
-                                    let mut path_buf2 = bun_paths::path_buffer_pool::get();
+                                    let dir = dirname_fd.unwrap_valid().unwrap_or_else(FD::cwd);
                                     let n = path.text.len();
+                                    if !is_cjs {
+                                        const MODULE_INFO_EXT: &[u8] =
+                                            bun_core::MODULE_INFO_EXTENSION.as_bytes();
+                                        let mut mi_path_buf = bun_paths::path_buffer_pool::get();
+                                        let mi_total = n + MODULE_INFO_EXT.len();
+                                        if mi_total < mi_path_buf.len() {
+                                            mi_path_buf[..n].copy_from_slice(path.text);
+                                            mi_path_buf[n..][..MODULE_INFO_EXT.len()]
+                                                .copy_from_slice(MODULE_INFO_EXT);
+                                            mi_path_buf[mi_total] = 0;
+                                            let mi_path = bun_core::ZStr::from_buf(
+                                                &mi_path_buf[..],
+                                                mi_total,
+                                            );
+                                            if let Ok(bytes) =
+                                                bun_sys::File::read_from(dir, mi_path)
+                                            {
+                                                if !bytes.is_empty() {
+                                                    already_bundled_module_info =
+                                                        crate::analyze_transpiled_module::ModuleInfoDeserialized::create_from_cached_record(&bytes);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    const BYTECODE_EXT: &[u8] =
+                                        bun_core::BYTECODE_EXTENSION.as_bytes();
+                                    let mut path_buf2 = bun_paths::path_buffer_pool::get();
                                     let total = n + BYTECODE_EXT.len();
                                     // `ZStr::from_buf` needs `buf[total] == 0`
                                     // in-bounds; fall back to re-parsing the
@@ -1749,7 +1787,6 @@ impl<'a> Transpiler<'a> {
                                     // `read_from` + wrap-in-`bun_ast::Source`.
                                     // We only need `.contents`, so call
                                     // `read_from` directly.
-                                    let dir = dirname_fd.unwrap_valid().unwrap_or_else(FD::cwd);
                                     match bun_sys::File::read_from(dir, zpath) {
                                         Ok(contents) if !contents.is_empty() => {
                                             break 'brk if is_cjs {
@@ -1767,14 +1804,19 @@ impl<'a> Transpiler<'a> {
                                 }
                                 default_value
                             }
-                        },
-                        source: source.clone(),
-                        loader,
-                        pending_imports: Default::default(),
-                        runtime_transpiler_cache: None,
-                        empty: false,
-                        source_contents_backing: source_backing,
-                    },
+                        };
+                        ParseResult {
+                            ast: bun_ast::Ast::empty_in(arena),
+                            already_bundled,
+                            already_bundled_module_info,
+                            source: source.clone(),
+                            loader,
+                            pending_imports: Default::default(),
+                            runtime_transpiler_cache: None,
+                            empty: false,
+                            source_contents_backing: source_backing,
+                        }
+                    }
                 });
             }
             // TODO: use lazy export AST
@@ -2086,6 +2128,7 @@ fn parse_data_loader<'a>(
         source: source.clone(),
         loader,
         already_bundled: AlreadyBundled::None,
+        already_bundled_module_info: None,
         pending_imports: Default::default(),
         runtime_transpiler_cache: None,
         empty: false,
@@ -2126,6 +2169,7 @@ fn parse_text_loader<'a>(
         source: source.clone(),
         loader,
         already_bundled: AlreadyBundled::None,
+        already_bundled_module_info: None,
         pending_imports: Default::default(),
         runtime_transpiler_cache: None,
         empty: false,
@@ -2182,6 +2226,7 @@ fn parse_md_loader<'a>(
         source: source.clone(),
         loader,
         already_bundled: AlreadyBundled::None,
+        already_bundled_module_info: None,
         pending_imports: Default::default(),
         runtime_transpiler_cache: None,
         empty: false,
@@ -2218,6 +2263,7 @@ fn parse_wasm_loader<'a>(
             source: source.clone(),
             loader,
             already_bundled: AlreadyBundled::None,
+            already_bundled_module_info: None,
             pending_imports: Default::default(),
             runtime_transpiler_cache: None,
             empty: false,
