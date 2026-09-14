@@ -296,9 +296,39 @@ stdenv.mkDerivation (finalAttrs: {
     runHook postConfigure
   '';
 
+  # NIX_BUILD_CORES was silently ignored: the build took the whole machine
+  # however `nix build --cores N` was invoked, which is a packaging bug — a
+  # derivation is supposed to respect it.  Two levers are needed, because the
+  # build nests:
+  #
+  #   bun scripts/build.ts        -> forwards short flags to ninja, so `-j`
+  #     ninja -j<N>                  bounds the top level, and cargo too
+  #       cmake --build ...          (it shares ninja's jobserver)
+  #         ninja jsc            <- WebKit: a separate build system that takes
+  #                                 its own job count, which `-j` above does
+  #                                 NOT reach.  CMAKE_BUILD_PARALLEL_LEVEL is
+  #                                 what `cmake --build` reads for that.
+  #
+  # MAKEFLAGS covers any make-driven dep the same way.
+  #
+  # Do NOT reach for taskset instead: `availableParallelism()` (which sizes
+  # the compile pool) and ninja's own default both read the CPU affinity
+  # mask, but sched_setaffinity is a silent no-op inside an OpenVZ/Virtuozzo
+  # container — it returns success while Cpus_allowed_list keeps the host's
+  # full set — so an affinity cap looks applied and bounds nothing.
+  # NIX_BUILD_CORES=0 is nix's own "use everything"; leave that unbounded.
   buildPhase = ''
     runHook preBuild
-    bun scripts/build.ts --profile=${profile} --build-dir=build/${profile}
+
+    buildCmd=(bun scripts/build.ts --profile=${profile} --build-dir=build/${profile})
+    if [ "''${NIX_BUILD_CORES:-0}" -gt 0 ]; then
+      echo "bun: capping the build at $NIX_BUILD_CORES job(s) (NIX_BUILD_CORES)"
+      buildCmd+=("-j$NIX_BUILD_CORES")
+      export CMAKE_BUILD_PARALLEL_LEVEL="$NIX_BUILD_CORES"
+      export MAKEFLAGS="-j$NIX_BUILD_CORES''${MAKEFLAGS:+ $MAKEFLAGS}"
+    fi
+    "''${buildCmd[@]}"
+
     runHook postBuild
   '';
 
