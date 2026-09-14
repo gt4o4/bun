@@ -121,6 +121,43 @@
         # Shared between devShell and nix/bun-target.nix.
         # ─────────────────────────────────────────────────────────────────────
 
+        # Upstream's own bun, pinned — see the comment on `bootstrapBun` in
+        # bunPackages below.  Keep the version in step with the tree's own
+        # LATEST / package.json line when the base moves.
+        bootstrapBun =
+          let
+            bunBootstrapVersion = "1.4.2";
+          in
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = "bun-bootstrap";
+            version = bunBootstrapVersion;
+            src = pkgs.fetchurl {
+              url = "https://github.com/oven-sh/bun/releases/download/bun-v${bunBootstrapVersion}/bun-linux-x64-baseline.zip";
+              hash = "sha256-xngEDxT+BEDrg503y9DOTAUaMtpygGrJfeamqra/co8=";
+            };
+            nativeBuildInputs = [
+              pkgs.unzip
+              pkgs.autoPatchelfHook
+            ];
+            buildInputs = [ pkgs.stdenv.cc.cc.lib ];
+            sourceRoot = ".";
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 bun-linux-x64-baseline/bun $out/bin/bun
+              ln -s bun $out/bin/bunx
+              runHook postInstall
+            '';
+            doInstallCheck = true;
+            installCheckPhase = ''
+              v=$($out/bin/bun --version)
+              [ "$v" = "${bunBootstrapVersion}" ] || {
+                echo "bun-bootstrap: --version said '$v', expected ${bunBootstrapVersion}" >&2
+                exit 1
+              }
+            '';
+            meta.mainProgram = "bun";
+          };
+
         # Build tools + libraries required to compile bun itself. The devShell
         # adds GCC, debug tooling, and Chromium test deps on top; nix/bun-target
         # consumes this list as-is.
@@ -138,8 +175,19 @@
           rustToolchain
           pkgs.go
 
-          # Bun itself (for running build scripts via `bun bd`)
-          pkgs.bun
+          # Bun itself (for running build scripts via `bun bd`) — pinned to
+          # upstream's own release binary, NOT nixpkgs'.  nixpkgs lags badly
+          # (1.3.13 on nixos-unstable while this tree is 1.4.x), and bun's
+          # repo needs a bun new enough to read its own manifests: under
+          # 1.3.13 `bun install` in packages/bun-error or src/node-fallbacks
+          # dies with "An unknown error occurred (Unexpected)" purely because
+          # a package.json exists in a parent directory, which is exactly what
+          # the install-cache FOD does.  Pinning also removes a real FOD
+          # hazard — its declared outputHash is fixed while its CONTENT would
+          # otherwise follow whatever bun the nixpkgs input happens to carry.
+          # baseline (SSE4.2-only): a bootstrap that just runs install/build
+          # scripts, so it must start on the oldest tier we build for.
+          bootstrapBun
 
           # Node.js - version pinned to 26
           nodejs
