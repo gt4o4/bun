@@ -37,8 +37,11 @@
 let
   bunSrc = self;
   bunVersion = self.shortRev or self.dirtyShortRev or "dev";
-  # package.json "version"
-  bunRelease = "1.4.2";
+  # package.json "version" — 1.4.3 is upstream's in-development number: this
+  # base is 66 commits past the bun-v1.4.2 tag, so it is a canary, not a
+  # release. Only names things (this derivation and the install-cache FOD);
+  # nothing reaches the compiled binary.
+  bunRelease = "1.4.3";
 
   # scripts/build/deps/webkit.ts WEBKIT_VERSION
   webkitRev = "2e2aa2290fac856d6f451ceacb58f7f5b44dd057";
