@@ -345,6 +345,10 @@
                 commonToolchainEnv
                 target
                 ;
+              # The install-cache FOD takes `bun` as its own argument, which
+              # callPackage would fill from nixpkgs — too old for this tree.
+              # See bootstrapBun above.
+              bun = bootstrapBun;
             }
           );
       in
