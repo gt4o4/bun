@@ -331,7 +331,8 @@
             zlib = zlib-ng;
             libpng = pkgs.libpng.override {
               stdenv = compatStdenv;
-              zlib = zlib-ng;
+              # libpng's strict encoding fixtures require reference zlib.
+              zlib = pkgs.zlib.override { stdenv = compatStdenv; };
             };
           };
           libwebp = pkgs.libwebp.override {
