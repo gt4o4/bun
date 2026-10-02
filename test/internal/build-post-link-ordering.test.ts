@@ -152,6 +152,19 @@ describe("emitPostLink ninja ordering", () => {
     expect(expected.forbiddenImports).not.toContain("_Unwind_Resume");
     expect(expected.forbiddenImports).toContain("__cxa_throw");
     expect(binaryChecksWarnOnly(compat)).toBe(false);
+    for (const [dependency, namespace, version] of [
+      ["zlib", "ZLIB", "1.2.0"],
+      ["libjpeg-turbo", "TURBOJPEG", "3.1"],
+    ] as const) {
+      const sharedCodec = binaryExpectations({ ...compat, systemDeps: new Set([dependency]) });
+      expect(sharedCodec.maxSymbolVersions).toEqual({ ...expected.maxSymbolVersions, [namespace]: version });
+    }
+    const sharedCodecs = binaryExpectations({ ...compat, systemDeps: new Set(["zlib", "libjpeg-turbo"]) });
+    expect(sharedCodecs.maxSymbolVersions).toEqual({
+      ...expected.maxSymbolVersions,
+      ZLIB: "1.2.0",
+      TURBOJPEG: "3.1",
+    });
     const upstream = binaryExpectations({ ...compat, dynamicLibstdcxx: false, systemDeps: new Set() });
     expect(upstream.maxSymbolVersions).toBeUndefined();
     expect(upstream.neededLibs.allowed).not.toContain("libstdc++.so.6");

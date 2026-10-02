@@ -419,6 +419,9 @@ export function binaryExpectations(cfg: Config): BinaryExpectations {
         maxSymbolVersions = compatRuntime
           ? { GLIBC: "2.34", GLIBCXX: "3.4.30", CXXABI: "1.3.13", GCC: "12.0.0" }
           : { GLIBC: "2.17" };
+        // Opted-in shared codecs carry their upstream ABI version namespaces.
+        if (cfg.systemDeps.has("zlib")) maxSymbolVersions.ZLIB = "1.2.0";
+        if (cfg.systemDeps.has("libjpeg-turbo")) maxSymbolVersions.TURBOJPEG = "3.1";
       } else if (musl) {
         // libstdc++/libgcc stay dynamic on musl on purpose: an N-API addon
         // built on Alpine links libstdc++.so.6, and it and bun must share one
