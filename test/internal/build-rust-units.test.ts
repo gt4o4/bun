@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { tempDir } from "harness";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { availableParallelism } from "node:os";
 
 import type { Config } from "../../scripts/build/config.ts";
 import {
@@ -16,12 +17,19 @@ import {
   type RustPlan,
   type UnitGraphUnit,
 } from "../../scripts/build/rust/plan.ts";
-import { parseBuildScriptOutput, rustcInvocation, timePass, writeDepfile } from "../../scripts/build/rust/run.ts";
+import {
+  buildScriptEnv,
+  parseBuildScriptOutput,
+  rustcInvocation,
+  timePass,
+  writeDepfile,
+} from "../../scripts/build/rust/run.ts";
 import { parseToml } from "../../scripts/build/rust/toml.ts";
 import {
   buildRustGraph,
   linkedRlibs,
   unitManifest,
+  type BuildScriptRunManifest,
   type ManifestContext,
   type RustUnit,
   type RustcUnitManifest,
@@ -171,6 +179,32 @@ function manifestIn(dir: string, over: Partial<RustcUnitManifest>): RustcUnitMan
     ...over,
   };
 }
+
+describe("buildScriptEnv", () => {
+  test.each([undefined, "1", "3"])("uses explicit NUM_JOBS %j without recording implicit CPU counts", jobs => {
+    using dir = tempDir("rust-build-script-env", {});
+    const root = String(dir);
+    const unit: BuildScriptRunManifest = {
+      ...manifestIn(root, {}),
+      kind: "build-script-run",
+      env: { RUSTFLAGS: "ignored", ...(jobs === undefined ? {} : { NUM_JOBS: jobs }) },
+      script: {
+        program: "build-script",
+        outDir: root,
+        linksDeps: [],
+        manifestDir: root,
+        local: false,
+        trackedEnv: {},
+      },
+    };
+    const before = JSON.stringify(unit);
+    const env = buildScriptEnv(unit);
+    expect(env.NUM_JOBS).toBe(jobs ?? String(availableParallelism()));
+    expect(env).not.toHaveProperty("RUSTFLAGS");
+    expect(JSON.stringify(unit)).toBe(before);
+    if (jobs === undefined) expect(unit.env).not.toHaveProperty("NUM_JOBS");
+  });
+});
 
 describe("writeDepfile", () => {
   test("keeps the rule for this edge's output, makes paths absolute, drops the rest", () => {
@@ -509,6 +543,15 @@ describe("buildRustGraph + unitManifest", () => {
     const traced = unitManifest(context(graph, true), dep) as RustcUnitManifest;
     expect(traced.args).toEqual([...DEP_ARGS(dep), "-Z", "time-passes", "-Z", "time-passes-format=json"]);
     expect(traced.phases).toBe(`${dep.output}.phases.json`);
+  });
+
+  test("unit manifests include an explicit core cap but no implicit machine CPU count", () => {
+    const graph = buildRustGraph(planWith([]), "/build/rust-target/shim");
+    const [dep] = graph.units;
+    const ctx = context(graph);
+    expect(unitManifest(ctx, dep).env).not.toHaveProperty("NUM_JOBS");
+    const capped = { ...ctx, baseEnv: { ...ctx.baseEnv, NUM_JOBS: "1" } };
+    expect(unitManifest(capped, dep).env.NUM_JOBS).toBe("1");
   });
 
   test("target rustflags change where an artifact is written but not how its symbols are mangled", () => {

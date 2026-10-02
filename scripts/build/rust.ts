@@ -342,7 +342,7 @@ export function cargoBuildInvocation(cfg: Config): CargoInvocation {
   // the parallel frontend can reorder diagnostics (and is still nightly
   // `-Z`-gated). The shipped binaries stay on the serial path.
   if (!cfg.ci) {
-    rustflags.push("-Zthreads=8");
+    rustflags.push(`-Zthreads=${Math.min(8, cfg.buildCores ?? 8)}`);
   }
   // rustc does not emit `.llvm_addrsig` by default on *any* target (verified
   // empirically — Linux-gnu, musl, darwin, msvc all missing it). lld's
@@ -545,6 +545,7 @@ export function cargoBuildInvocation(cfg: Config): CargoInvocation {
     CXX: cfg.cxx,
     AR: cfg.ar,
   };
+  if (cfg.buildCores !== undefined) unitEnv.NUM_JOBS = String(cfg.buildCores);
   if (cfg.cargoHome !== undefined) unitEnv.CARGO_HOME = cfg.cargoHome;
   if (cfg.rustupHome !== undefined) unitEnv.RUSTUP_HOME = cfg.rustupHome;
   // Pin the toolchain explicitly. `vendor/` is commonly a symlink shared across worktrees; rustup's directory walk

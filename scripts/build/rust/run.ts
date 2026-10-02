@@ -320,18 +320,23 @@ function snapshotDir(dir: string): Map<string, [string, Date]> {
   return out;
 }
 
+/** Build-script environment: only an explicit core cap is stored in the unit's manifest. */
+export function buildScriptEnv(unit: Extract<UnitManifest, { kind: "build-script-run" }>): Record<string, string> {
+  // Detect an uncapped machine's CPU count at execution time so affinity changes do not invalidate manifests.
+  const env = mergedEnv(unit, { NUM_JOBS: unit.env.NUM_JOBS ?? String(availableParallelism()) });
+  delete env.RUSTFLAGS; // cargo: build scripts see CARGO_ENCODED_RUSTFLAGS, never RUSTFLAGS
+  // DEP_<LINKS>_<KEY> from direct dependencies' scripts.
+  for (const dep of unit.script.linksDeps) {
+    for (const [k, v] of readScriptOutput(dep.output).metadata) env[`DEP_${envify(dep.links)}_${envify(k)}`] = v;
+  }
+  return env;
+}
+
 function runBuildScript(unit: Extract<UnitManifest, { kind: "build-script-run" }>): never {
   const { script } = unit;
   mkdirSync(script.outDir, { recursive: true });
   const before = snapshotDir(script.outDir);
-  // NUM_JOBS is the machine's, decided now: putting it in the manifest would rerun every build script whenever
-  // configure saw a different CPU count (cgroups, affinity). cargo does not fingerprint it either.
-  const env = mergedEnv(unit, { NUM_JOBS: String(availableParallelism()) });
-  delete env.RUSTFLAGS; // cargo: build scripts see CARGO_ENCODED_RUSTFLAGS, never RUSTFLAGS
-  // DEP_<LINKS>_<KEY> from direct dependencies' scripts.
-  for (const dep of script.linksDeps) {
-    for (const [k, v] of readScriptOutput(dep.output).metadata) env[`DEP_${envify(dep.links)}_${envify(k)}`] = v;
-  }
+  const env = buildScriptEnv(unit);
   const r = spawnSync(script.program, [], {
     cwd: unit.cwd,
     env,

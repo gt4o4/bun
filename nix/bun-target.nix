@@ -17,6 +17,9 @@
   fetchurl,
   bun,
   rustPlatform,
+  rustSrc,
+  runCommand,
+  jq,
   coreutils,
   cacert,
   # Dynamic-linked system deps shared across release-tier builds
@@ -44,7 +47,7 @@ let
   bunRelease = "1.4.3";
 
   # scripts/build/deps/webkit.ts WEBKIT_VERSION
-  webkitRev = "2e2aa2290fac856d6f451ceacb58f7f5b44dd057";
+  webkitRev = "fb1167ebf2cb9edc1f6771a2c11771b024693ae0";
   # scripts/build/deps/nodejs-headers.ts NODEJS_VERSION
   nodeVer = "26.3.0";
 
@@ -67,8 +70,8 @@ let
     };
     libarchive = {
       repo = "libarchive/libarchive";
-      rev = "ded82291ab41d5e355831b96b0e1ff49e24d8939";
-      hash = "sha256-BC8O/nFHBj/5uhDxo47QgOlJvL0Evb81kriEbdEbHaI=";
+      rev = "27cbc7827172698143e440801fc0ba39ccb4f1f5";
+      hash = "sha256-gemB7/R0baTIDmYi3IJ7Iy5jM/8uJzIKbuj96GyJG5I=";
     };
     lolhtml = {
       repo = "oven-sh/lol-html";
@@ -77,28 +80,28 @@ let
     };
     lshpack = {
       repo = "litespeedtech/ls-hpack";
-      rev = "8905c024b6d052f083a3d11d0a169b3c2735c8a1";
-      hash = "sha256-B9i/kBuxsVVD846r0jk4UZ4SEO6621Lz1lHW7xMO+XM=";
+      rev = "cf0f70dd10b352194c97448eb5d00b4aa484f531";
+      hash = "sha256-sTjY/HHl9/NTtXhJQs8IrVcFDXsyESHwlWJ/aWdX+fg=";
     };
     lsqpack = {
       repo = "litespeedtech/ls-qpack";
-      rev = "1e9c5b8e59f8161c54f168a570c8bfdc59ded0c3";
-      hash = "sha256-6dir5bfB41uZCKlSHirNfB0XVHurwB1zxyl+Aq67zC0=";
+      rev = "91567706c41c0d97ab8dc576873ecd472d7869fa";
+      hash = "sha256-Ho96aamu45cMs/qPvCLi3wC32vjytR2vNfUAAebGlDw=";
     };
     lsquic = {
       repo = "litespeedtech/lsquic";
-      rev = "3181911301b1aa4f54c1ed690901abc674ee08fb";
-      hash = "sha256-+MuQ+zJ+uRWXwjFjv1lsDRiCVgvjW2Ydm6hIkcxGFzU=";
+      rev = "f812ceb9529e26717df78c6064a2ff648b949f3e";
+      hash = "sha256-xagdC4EOhdNe2UYOF1dscfAoHr+roF2FnAvf2Mlt9z0=";
     };
     mimalloc = {
       repo = "oven-sh/mimalloc";
-      rev = "6a64e1ba7f5b2130d4efccb67ec87fd0003f0f6a";
-      hash = "sha256-82NDQWrYI9/MphvRitS7fw2IFKt34P1e8Wn0qc3euLg=";
+      rev = "eab09015a5850ae18fc43ccfaa5bbe8272992314";
+      hash = "sha256-WEGnoJD3xnNXBF69LbDvxXXThNWIYQUWGp5G73T57es=";
     };
     picohttpparser = {
       repo = "h2o/picohttpparser";
-      rev = "066d2b1e9ab820703db0837a7255d92d30f0c9f5";
-      hash = "sha256-Y3/yq29cf34FpbXcOT1c8v6o1HVPys6q+TX//1wTI+4=";
+      rev = "f4d94b48b31e0abae029ebeafcfd9ca0680ede58";
+      hash = "sha256-vXc/rR4sZTK3pl72tg3sNhKj5WbjyEQnLMLLq4ncfpw=";
     };
     rust-argon2 = {
       repo = "sru-systems/rust-argon2";
@@ -150,13 +153,25 @@ let
   webkitSrc = fetchgit {
     url = "https://github.com/oven-sh/WebKit.git";
     rev = webkitRev;
-    hash = "sha256-EJsxFF2NIROfGkvlXTKRR+MSO1fFwquZaqD9G4gvzuU=";
+    hash = "sha256-HQ57+ViT12ecoV2VMXq24JZSyN1h5yN3XZjxSuGun+I=";
   };
 
-  # Every crates.io dependency of the workspace, straight from the root
-  # Cargo.lock — it already resolves the two path crates' transitive deps and
-  # has no git sources, so no outputHashes. cargo runs with --locked.
-  cargoVendor = rustPlatform.importCargoLock { lockFile = "${bunSrc}/Cargo.lock"; };
+  workspaceCargoVendor = rustPlatform.importCargoLock { lockFile = "${bunSrc}/Cargo.lock"; };
+  # std is part of the upstream per-crate link graph. Its pinned rust-src
+  # component already ships every dependency needed by --all-features metadata.
+  cargoVendor = runCommand "bun-cargo-vendor" { nativeBuildInputs = [ jq ]; } ''
+    mkdir -p "$out"
+    for crate in ${workspaceCargoVendor}/* ${rustSrc}/lib/rustlib/src/rust/library/vendor/*; do
+      [ -d "$crate" ] || continue
+      name=$(basename "$crate")
+      if [ -e "$out/$name" ]; then
+        test "$(jq -r .package "$crate/.cargo-checksum.json")" = \
+             "$(jq -r .package "$out/$name/.cargo-checksum.json")"
+      else
+        ln -s "$crate" "$out/$name"
+      fi
+    done
+  '';
 
   # FOD: download cache from `bun install` (hashing node_modules would be
   # fragile due to symlinks / hoisting).
@@ -172,6 +187,8 @@ let
       bun
       cacert
     ];
+
+    impureEnvVars = lib.fetchers.proxyImpureEnvVars;
 
     dontConfigure = true;
     dontPatch = true;
@@ -201,7 +218,7 @@ let
 
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-cXrvUhfUydpm/jyTqIvE9X2KnUSA24w3y437j05C0nY=";
+    outputHash = "sha256-1w3OGsBRlZW5R+ZtpKzo9ZmoTN5FWJ4heAqOWNcoFlg=";
   };
 in
 stdenv.mkDerivation (finalAttrs: {
@@ -227,6 +244,8 @@ stdenv.mkDerivation (finalAttrs: {
   # one-off `patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2` by
   # the end user to run on FHS distros. glibc floor is 2.34 (RHEL 9 /
   # Ubuntu 22.04+) via the compat stdenv passed in from flake.nix.
+  # Build tools can use unstable libraries; the target must only see compat libs.
+  strictDeps = true;
   nativeBuildInputs = bunPackages ++ [ coreutils ];
   buildInputs = [
     icu

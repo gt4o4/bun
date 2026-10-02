@@ -443,6 +443,7 @@ const configFlags: { [K in keyof Required<PartialConfig>]: ConfigFlagKind<NonNul
   abi: "string",
   buildType: "string",
   mode: "string",
+  buildCores: "number",
   lto: "boolean",
   pgoGenerate: "string",
   pgoUse: "string",
@@ -625,7 +626,10 @@ function parseArgs(argv: string[]): CliArgs {
           : kind === "number"
             ? parseInteger(rawKey, value)
             : kind === "list"
-              ? value.split(",").map(name => name.trim()).filter(Boolean)
+              ? value
+                  .split(",")
+                  .map(name => name.trim())
+                  .filter(Boolean)
               : value;
     }
   }

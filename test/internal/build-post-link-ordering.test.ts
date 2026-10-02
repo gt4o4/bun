@@ -129,9 +129,18 @@ describe("emitPostLink ninja ordering", () => {
     const cfg = hostConfig({ buildType: "Release" }, String(dir));
     const compat: Config = {
       ...cfg,
-      os: "linux", linux: true, windows: false, darwin: false, freebsd: false,
-      arch: "x64", x64: true, arm64: false, abi: "gnu", sysroot: undefined,
-      dynamicLibstdcxx: true, systemDeps: new Set(["zstd"]),
+      os: "linux",
+      linux: true,
+      windows: false,
+      darwin: false,
+      freebsd: false,
+      arch: "x64",
+      x64: true,
+      arm64: false,
+      abi: "gnu",
+      sysroot: undefined,
+      dynamicLibstdcxx: true,
+      systemDeps: new Set(["zstd"]),
     };
     const expected = binaryExpectations(compat);
     expect(expected.maxSymbolVersions).toEqual({ GLIBC: "2.34", GLIBCXX: "3.4.30", CXXABI: "1.3.13", GCC: "12.0.0" });

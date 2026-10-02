@@ -318,8 +318,9 @@ nix build --override-input bun "git+file://$PWD/submodules/bun?ref=main" .#bun-h
 The derivation lives at [`nix/bun-target.nix`](/nix/bun-target.nix) and pins
 every input: WebKit (`WEBKIT_VERSION`), the node headers, the vendored dep
 tarballs (exposed to the build scripts through `BUN_BUILD_PREFETCH_DIR`), the
-whole crates.io graph from `Cargo.lock` (`rustPlatform.importCargoLock`) and
-the exact nightly from `rust-toolchain.toml` (via fenix). Network is only
+whole crates.io graph from `Cargo.lock` (`rustPlatform.importCargoLock`),
+the standard-library vendor tree shipped with `rust-src`, and the exact
+nightly from `rust-toolchain.toml` (via fenix). Network is only
 needed for one fixed-output derivation that runs `bun install
 --frozen-lockfile`. Everything else is hermetic.
 
@@ -336,6 +337,11 @@ git -C vendor/WebKit checkout <commit_hash>   # see WEBKIT_VERSION in scripts/bu
 bun run build --profile=release-penryn --build-dir=build/release-penryn
 ```
 
+For memory-limited builds, pass `-j1 --build-cores=1`: `-j` limits Ninja
+processes, while `--build-cores` limits Rust frontend/build-script and ELF
+linker/ThinLTO workers within each process. The Nix derivation uses
+`NIX_BUILD_CORES` for both limits.
+
 The system libraries below (their `-dev` packages) must be installed: in
 `systemDeps` mode the deps are linked with `-l<name>` from the toolchain's
 default search path and their headers resolve from the default include path.
@@ -346,15 +352,13 @@ default search path and their headers resolve from the default include path.
   that still builds from source, and the nested WebKit cmake invocation;
   `rustCpuTargetFlags()` derives the matching `-Ctarget-cpu=` from the same
   table, so the two halves cannot drift apart.
-- `lto: true` — C++ `-flto=thin`, Rust fat LTO via the workspace profile.
-  Required: without it `scripts/build/deps/webkit.ts` silently downgrades the
-  nested WebKit build to `RelWithDebInfo` (no `-O3`).
-- `crossLangLto: false` — rustc's bundled LLVM is newer than clang 21's, so
-  cross-language LTO would swap the link to bare `rust-lld` and bypass the
-  rpath-injecting `ld` wrapper the Nix build relies on. Both halves still LTO
-  on their own; only the cross-language inlining is lost.
-- `buildStd: false` — no `-Zbuild-std`: a sandboxed build would otherwise have
-  to vendor rust-src's own crate graph for ~200 KB of std symbolizer.
+- `lto: true` — Rust and C++ bitcode participate in the same final LTO
+  link. Clang and the pinned Rust nightly must both use LLVM 23; the link
+  stays on the Nix wrapper so runtime library paths are preserved.
+- Rust's standard library is rebuilt with the tier's CPU flags and linked
+  through upstream's per-crate graph. The Nix toolchain includes `rust-src`,
+  and its shipped vendor tree is combined with the workspace's Cargo sources
+  so both graph planning and compilation remain offline.
 - `dynamicLibstdcxx: true` — `-lstdc++ -lgcc_s` instead of the static copies;
   the compat host's libstdc++ is the target ABI.
 - `systemDeps`: zstd, brotli, libdeflate, zlib, hdrhistogram, highway, libspng,
@@ -366,8 +370,10 @@ default search path and their headers resolve from the default include path.
   patches), ls-qpack, lsquic, picohttpparser, and since 1.4.x c-ares (upstream
   patches it: `patches/cares/accept-rdata-compression.patch`). libuv is not
   linked on Linux at all upstream.
-- `smokeTest: false` on the sub-native tiers (penryn, nehalem): the binary is
-  validated on the deployed machine or under qemu instead.
+- `smokeTest: false` on the sub-native tiers (penryn, nehalem): the runtime
+  smoke test is deferred to the deployed machine or qemu. Static binary
+  checks still enforce allowed libraries and the glibc 2.34/GCC 12 ABI
+  ceilings. Instruction-set compatibility still needs hardware or qemu.
 
 ### Runtime requirements (manual / non-Nix builds)
 

@@ -20,6 +20,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  buildCoreLimit,
   resolveConfig,
   type Abi,
   type Arch,
@@ -184,25 +185,69 @@ describe("build-std feature set", () => {
   });
 });
 
-describe("compat-runtime release tiers", () => {
-  test.each(["penryn", "nehalem", "haswell"] as const)("%s keeps the CPU target, std graph and wrapped linker", tier => {
-    const ld = "/fake/nix-compat/bin/ld";
-    const cfg = resolveConfig(
-      { ...profiles[`release-${tier}`], os: "linux", arch: "x64", abi: "gnu", linuxSysroot: "/fake" },
-      { ...mockToolchain, ld },
-    );
-    const invocation = cargoBuildInvocation(cfg);
-    const flags = computeFlags(cfg);
-    expect(invocation.args).toContain(cargoBuildStdArg);
-    expect(invocation.rustflags).toContain(`-Ctarget-cpu=${tier}`);
-    expect(invocation.rustflags).toContain("-Clinker-plugin-lto");
-    expect(flags.cxxflags).toContain(`-march=${tier}`);
-    expect(flags.ldflags).toContain(`--ld-path=${ld}`);
-    expect(flags.ldflags).toContain("-lstdc++");
-    expect(flags.ldflags).not.toContain("-static-libstdc++");
-    expect(cfg.ld).toBe(ld);
-    expect(cfg.baseline).toBe(tier !== "haswell");
+describe("build-core limits", () => {
+  test.each([undefined, "", 0, "0"])("%j preserves the default thread count", value => {
+    expect(buildCoreLimit(value)).toBeUndefined();
   });
+
+  test.each([-1, "-1", "abc", "1.5", Infinity, Number.MAX_SAFE_INTEGER + 1])("rejects %j", value => {
+    expect(() => buildCoreLimit(value)).toThrow("must be a non-negative integer");
+  });
+
+  test.each([1, 2, 16])("caps Rust and ELF linker workers at %i cores", cores => {
+    const cfg = resolve({ os: "linux", arch: "x64", abi: "gnu", linuxSysroot: "/fake", buildCores: cores });
+    const invocation = cargoBuildInvocation(cfg);
+    expect(invocation.rustflags).toContain(`-Zthreads=${Math.min(8, cores)}`);
+    expect(invocation.unitEnv.NUM_JOBS).toBe(String(cores));
+    expect(invocation.env.NUM_JOBS).toBe(String(cores));
+    expect(computeFlags(cfg).ldflags).toContain(`-Wl,--threads=${cores}`);
+    expect(computeFlags(cfg).ldflags).toContain(`-Wl,--thinlto-jobs=${cores}`);
+    expect(computeFlags({ ...cfg, lto: false }).ldflags).toContain(`-Wl,--thinlto-jobs=${cores}`);
+    const asan = { ...cfg, asan: true, lto: false };
+    expect(computeFlags(asan).ldflags).toContain(`-Wl,--threads=${cores}`);
+    expect(computeFlags(asan).ldflags).not.toContain(`-Wl,--thinlto-jobs=${cores}`);
+  });
+
+  test("NIX_BUILD_CORES feeds resolved config and explicit zero restores defaults", () => {
+    const saved = process.env.NIX_BUILD_CORES;
+    try {
+      process.env.NIX_BUILD_CORES = "1";
+      const partial: PartialConfig = { os: "linux", arch: "x64", abi: "gnu", linuxSysroot: "/fake" };
+      expect(resolve(partial).buildCores).toBe(1);
+      const unlimited = resolve({ ...partial, buildCores: 0 });
+      expect(unlimited.buildCores).toBeUndefined();
+      expect(cargoBuildInvocation(unlimited).rustflags).toContain("-Zthreads=8");
+      expect(cargoBuildInvocation(unlimited).unitEnv).not.toHaveProperty("NUM_JOBS");
+      expect(computeFlags(unlimited).ldflags.some(flag => /--(?:threads|thinlto-jobs)=/.test(flag))).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.NIX_BUILD_CORES;
+      else process.env.NIX_BUILD_CORES = saved;
+    }
+  });
+});
+
+describe("compat-runtime release tiers", () => {
+  test.each(["penryn", "nehalem", "haswell"] as const)(
+    "%s keeps the CPU target, std graph and wrapped linker",
+    tier => {
+      const ld = "/fake/nix-compat/bin/ld";
+      const cfg = resolveConfig(
+        { ...profiles[`release-${tier}`], os: "linux", arch: "x64", abi: "gnu", linuxSysroot: "/fake" },
+        { ...mockToolchain, ld },
+      );
+      const invocation = cargoBuildInvocation(cfg);
+      const flags = computeFlags(cfg);
+      expect(invocation.args).toContain(cargoBuildStdArg);
+      expect(invocation.rustflags).toContain(`-Ctarget-cpu=${tier}`);
+      expect(invocation.rustflags).toContain("-Clinker-plugin-lto");
+      expect(flags.cxxflags).toContain(`-march=${tier}`);
+      expect(flags.ldflags).toContain(`--ld-path=${ld}`);
+      expect(flags.ldflags).toContain("-lstdc++");
+      expect(flags.ldflags).not.toContain("-static-libstdc++");
+      expect(cfg.ld).toBe(ld);
+      expect(cfg.baseline).toBe(tier !== "haswell");
+    },
+  );
 });
 
 describe("CPU baseline", () => {

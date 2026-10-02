@@ -938,6 +938,16 @@ export const linkerFlags: Flag[] = [
     desc: "LTO at link time (matches compile-side -flto=thin)",
   },
   {
+    flag: c => `-Wl,--threads=${c.buildCores}`,
+    when: c => (c.linux || c.freebsd) && c.buildCores !== undefined,
+    desc: "Bound ELF lld's worker pool independently of ninja's job count",
+  },
+  {
+    flag: c => `-Wl,--thinlto-jobs=${c.buildCores}`,
+    when: c => (c.linux || c.freebsd) && linkRunsLto(c) && c.buildCores !== undefined,
+    desc: "Bound ThinLTO backend workers inside the final link",
+  },
+  {
     // Said to lld itself. A link-line `-O` reaches lld only through the clang driver, only on ELF, and only beside
     // `-flto` (as -plugin-opt=O<n>), which a link whose LTO covers the Rust crates alone does not pass; the Darwin
     // driver forwards none at all.

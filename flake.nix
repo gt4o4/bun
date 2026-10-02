@@ -98,23 +98,19 @@
         # Node.js 26 - matching scripts/build/deps/nodejs-headers.ts (26.3.0)
         nodejs = pkgs.nodejs_26;
 
-        # Rust: the exact nightly from rust-toolchain.toml, host std only.
-        # No `rust-src`: the release tiers set `buildStd: false`
-        # (scripts/build/profiles.ts), so std is never rebuilt and its
-        # crate graph never has to be vendored. NEVER add rustup:
-        # tools.ts findRustLld() pre-flights `rustup toolchain install`
-        # (a network call at configure time) whenever it finds one.
-        # Bump: set `date` to the toml's channel date and refresh sha256 via
-        #   nix store prefetch-file https://static.rust-lang.org/dist/<date>/channel-rust-nightly.toml
+        # The per-crate Rust graph rebuilds std, so this toolchain includes
+        # rust-src and nix/bun-target.nix vendors its shipped dependency tree.
+        # Keep the date and manifest hash in step with rust-toolchain.toml.
         rustNightly = fenix.packages.${system}.toolchainOf {
           channel = "nightly";
-          date = "2026-07-20";
-          sha256 = "sha256-G/cKTxQGcy3XmVfMwNCvx4vcac36O19XhXq1ZyfgXVY=";
+          date = "2026-09-15";
+          sha256 = "sha256-8MG8lN1cI85KWqQFobgRiIBeKAFYnJ9EmEs7WrF9ITY=";
         };
         rustToolchain = fenix.packages.${system}.combine [
           rustNightly.rustc
           rustNightly.cargo
           rustNightly.rust-std
+          rustNightly.rust-src
         ];
 
         # ─────────────────────────────────────────────────────────────────────
@@ -122,8 +118,8 @@
         # ─────────────────────────────────────────────────────────────────────
 
         # Upstream's own bun, pinned — see the comment on `bootstrapBun` in
-        # bunPackages below.  Keep the version in step with the tree's own
-        # LATEST / package.json line when the base moves.
+        # bunPackages below. Keep the version in step with pins.bun.version
+        # in scripts/build/ci-images/spec.ts when the base moves.
         bootstrapBun =
           let
             bunBootstrapVersion = "1.4.2";
@@ -296,7 +292,7 @@
         # functional gain — WebKit doesn't need 76-only API. Everything
         # else uses unstable sources on the compat stdenv, keeping
         # versions current while capping the glibc ABI surface.
-        compatDeps = {
+        compatDeps = rec {
           stdenv = compatStdenv;
           # ICU straight from compat pin (71.1) — skip the ~30min rebuild.
           inherit (pkgsCompat) icu;
@@ -314,7 +310,10 @@
             stdenv = compatStdenv;
             withZlibCompat = true;
           };
-          hdrhistogram_c = pkgs.hdrhistogram_c.override { stdenv = compatStdenv; };
+          hdrhistogram_c = pkgs.hdrhistogram_c.override {
+            stdenv = compatStdenv;
+            zlib = zlib-ng;
+          };
           libuv = pkgs.libuv.override { stdenv = compatStdenv; };
           # libhwy tests link against gtest from unstable (built with glibc
           # 2.42 — carries __isoc23_*@2.38 refs). Disable the test build
@@ -323,14 +322,26 @@
             cmakeFlags = (old.cmakeFlags or [ ]) ++ [
               "-DBUILD_TESTING=OFF"
               "-DHWY_ENABLE_TESTS=OFF"
+              "-DBUILD_SHARED_LIBS=OFF"
             ];
             doCheck = false;
           });
           libjpeg = pkgs.libjpeg.override { stdenv = compatStdenv; };
-          libspng = pkgs.libspng.override { stdenv = compatStdenv; };
+          libspng = pkgs.libspng.override {
+            stdenv = compatStdenv;
+            zlib = zlib-ng;
+            libpng = pkgs.libpng.override {
+              stdenv = compatStdenv;
+              zlib = zlib-ng;
+            };
+          };
           libwebp = pkgs.libwebp.override {
             stdenv = compatStdenv;
             libjpeg = pkgs.libjpeg.override { stdenv = compatStdenv; };
+            # These dependencies only support WebP's helper executables.
+            pngSupport = false;
+            tiffSupport = false;
+            gifSupport = false;
           };
         };
 
@@ -349,6 +360,7 @@
               # callPackage would fill from nixpkgs — too old for this tree.
               # See bootstrapBun above.
               bun = bootstrapBun;
+              rustSrc = rustNightly.rust-src;
             }
           );
       in

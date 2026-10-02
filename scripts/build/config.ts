@@ -112,6 +112,8 @@ export interface Config {
   release: boolean;
   /** What tells a Config from a {@link CodegenConfig}. */
   mode: "full";
+  /** Tool-internal thread cap, from --build-cores or NIX_BUILD_CORES. Undefined means no additional cap. */
+  buildCores: number | undefined;
 
   // ─── Features (all explicit booleans) ───
   lto: boolean;
@@ -372,6 +374,8 @@ export interface PartialConfig {
   abi?: Abi;
   buildType?: BuildType;
   mode?: Mode;
+  /** Override NIX_BUILD_CORES for tool-internal threads; zero keeps the tools' defaults. */
+  buildCores?: number;
   lto?: boolean;
   pgoGenerate?: string;
   pgoUse?: string;
@@ -943,6 +947,17 @@ export function resolveCodegenConfig(partial: PartialConfig, toolchain: JsToolch
   return { ...base, mode: "codegen", host, os, x64: arch === "x64" };
 }
 
+/** Nix uses zero for all available cores; an absent cap preserves the build's existing defaults. */
+export function buildCoreLimit(value: number | string | undefined): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const cores = typeof value === "number" ? value : /^\d+$/.test(value) ? Number(value) : NaN;
+  assert(
+    Number.isSafeInteger(cores) && cores >= 0,
+    `buildCores / NIX_BUILD_CORES must be a non-negative integer, got: ${value}`,
+  );
+  return cores === 0 ? undefined : cores;
+}
+
 export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Config {
   assert(partial.mode !== "codegen", "mode=codegen resolves a CodegenConfig: resolveCodegenConfig()");
   const host = detectHost();
@@ -1329,6 +1344,7 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     debug,
     release,
     mode: "full",
+    buildCores: buildCoreLimit(partial.buildCores ?? process.env.NIX_BUILD_CORES),
     lto,
     pgoGenerate,
     pgoUse,

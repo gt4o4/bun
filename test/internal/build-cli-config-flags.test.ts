@@ -32,7 +32,16 @@ test.concurrent("an unknown field is an error that lists the fields", async () =
   const { stderr, exitCode } = await build("--ltoo=on");
   expect(stderr).toContain("Unknown config field: --ltoo");
   expect(stderr).toContain("hint: Known fields: ");
-  for (const field of ["lto", "androidApiLevel", "freebsdVersion", "nodejsV8Version", "x64Cpu", "dynamicLibstdcxx", "smokeTest", "systemDeps"]) {
+  for (const field of [
+    "lto",
+    "androidApiLevel",
+    "freebsdVersion",
+    "nodejsV8Version",
+    "x64Cpu",
+    "dynamicLibstdcxx",
+    "smokeTest",
+    "systemDeps",
+  ]) {
     expect(stderr).toMatch(new RegExp(`Known fields: .*\\b${field}\\b`));
   }
   expect(exitCode).toBe(1);
@@ -45,6 +54,7 @@ test.concurrent("every spelling of a field is accepted", async () => {
     "--nodejsV8Version=13.6.233.10",
     "--android-api-level=28",
     "--lto=off",
+    "--build-cores=1",
     "--x64-cpu=penryn",
     "--dynamic-libstdcxx=on",
     "--smoke-test=off",
