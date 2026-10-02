@@ -20,9 +20,10 @@
  */
 import { describe, expect, test } from "bun:test";
 import { bunExe, bunRun, tempDir } from "harness";
-import { readdirSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
+import { generateBuildOptionsRs } from "../../scripts/build/buildOptionsRs.ts";
 import { emitBindgen, emitBindgenV2, registerCodegenRules, type CodegenOutputs } from "../../scripts/build/codegen.ts";
 import { registerDirStamps } from "../../scripts/build/compile.ts";
 import { resolveConfig, type Config, type Toolchain } from "../../scripts/build/config.ts";
@@ -270,4 +271,21 @@ describe("emitBindgen", () => {
     },
     generatorTimeout,
   );
+});
+
+describe("generated Rust revision", () => {
+  test.each([
+    ["unknown", ""],
+    ["", ""],
+    ["0123456789abcdef0123456789abcdef01234567", "0123456789abcdef0123456789abcdef01234567"],
+  ])("maps %j to a valid build-options SHA", (revision, expected) => {
+    using dir = tempDir("build-options-revision", {});
+    const { cfg } = configure(String(dir));
+    const path = generateBuildOptionsRs({ ...cfg, revision });
+    expect(
+      readFileSync(path, "utf8")
+        .split("\n")
+        .filter(line => line.startsWith("pub const SHA:")),
+    ).toEqual([`pub const SHA: &str = ${JSON.stringify(expected)};`]);
+  });
 });
