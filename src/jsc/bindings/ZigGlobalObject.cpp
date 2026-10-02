@@ -16,6 +16,7 @@
 #include "JavaScriptCore/ClassInfo.h"
 #include "JavaScriptCore/CodeBlock.h"
 #include "JavaScriptCore/Completion.h"
+#include "JavaScriptCore/CPU.h"
 #include "JavaScriptCore/DeferredWorkTimer.h"
 #include "JavaScriptCore/Error.h"
 #include "JavaScriptCore/ErrorInstance.h"
@@ -380,6 +381,11 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
                         onCrash(env, strlen(env));
                     }
                 }
+            }
+            // IPInt's SIMD opcodes also require AVX when the JIT is disabled.
+            if (JSC::isX86_64() && !JSC::isX86_64_AVX()) {
+                JSC::Options::useWasmSIMD() = false;
+                JSC::Options::forceAllFunctionsToUseSIMD() = false;
             }
             // $vm, which an engine built with assertions has, evaluates strings and makes global objects
             // that are not Bun's, where eval is on. After the loop: BUN_JSC_useDollarVM does not bring it back.

@@ -277,3 +277,32 @@ describe("JPEG codec: libjpeg-turbo jsimd runtime dispatch", () => {
     }
   });
 });
+
+describe("WebAssembly CPU feature gating", () => {
+  test("scalar popcnt remains available", () => {
+    const bytes = Buffer.from("0061736d0100000001060160017f017f03020100070501016600000a070105002000690b", "hex");
+    expect(WebAssembly.validate(bytes)).toBe(true);
+    const { f } = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports;
+    expect((f as (value: number) => number)(-1)).toBe(32);
+  });
+
+  // The CPU-emulation runner sets 0 for non-AVX targets and 1 for AVX-capable targets.
+  test.skipIf(process.env.BUN_TEST_EXPECT_WASM_SIMD === undefined)(
+    "SIMD matches the execution CPU with or without JIT",
+    () => {
+      const expected = process.env.BUN_TEST_EXPECT_WASM_SIMD;
+      expect(["0", "1"]).toContain(expected);
+      const bytes = Buffer.from(
+        "0061736d0100000001060160017f017f03020100070501016600000a0d010b002000fd0ffd62fd16000b",
+        "hex",
+      );
+      expect(WebAssembly.validate(bytes)).toBe(expected === "1");
+      if (expected === "0") {
+        expect(() => new WebAssembly.Module(bytes)).toThrow(WebAssembly.CompileError);
+      } else {
+        const { f } = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports;
+        expect((f as (value: number) => number)(-1)).toBe(8);
+      }
+    },
+  );
+});

@@ -406,18 +406,16 @@ on an FHS distro also swap the interpreter:
 
 ### Runtime caveats
 
-JSC's runtime CPU dispatch handles SSE4.2/AVX/AVX2 fallbacks for plain
-JavaScript across all four JIT tiers. Two narrow code paths still emit
-post-Penryn instructions unconditionally and will SIGILL if exercised:
+Penryn lacks AVX and POPCNT; Nehalem lacks AVX. WebAssembly SIMD is disabled
+on non-AVX processors even with the JIT disabled or SIMD options explicitly
+enabled. Such modules fail validation and throw `WebAssembly.CompileError`
+instead of reaching unsupported IPInt instructions. Scalar WebAssembly,
+including `i32.popcnt` and `i64.popcnt`, remains enabled through JSC's fallbacks.
 
-| Code path                      | Symbol(s)                                      | Op emitted                              | Impact                                                 |
-| ------------------------------ | ---------------------------------------------- | --------------------------------------- | ------------------------------------------------------ |
-| WASM v128 SIMD opcodes         | `ipint_simd_*` (LLInt)                         | `vpshufb`, `vroundps`, `vroundpd` (AVX) | penryn + nehalem: guest module using v128 SIMD SIGILLs |
-| WASM `i{32,64}.popcnt` opcodes | `ipint_i32_popcnt`, `ipint_i64_popcnt` (LLInt) | native `popcntq`                        | penryn only                                            |
-
-Plain JS, Bun APIs and WASM modules that don't use those opcodes all work.
-PCLMUL and POPCNT also appear elsewhere in the binary (zlib-ng's CRC32,
-simdutf's `westmere` kernel) but those are runtime-dispatched.
+Runtime-dispatched fast paths in zlib-ng, simdutf and other libraries can
+contain newer instructions. Inspecting those instructions alone does not
+establish whether a supported CPU reaches them. Check the actual binary on
+its target CPU or an emulator, including its transitive runtime libraries.
 
 ### Verifying the binary
 
@@ -429,8 +427,16 @@ ldd build/release-penryn/bun | grep -E 'libz|libzstd|libbrotli|libicu|libhdr|lib
 qemu-x86_64 -cpu Penryn build/release-penryn/bun -e 'console.log(Bun.version)'
 qemu-x86_64 -cpu Nehalem build/release-nehalem/bun -e 'console.log(Bun.version)'
 
-# Pin the floor: -cpu Conroe (no SSE4.1) should SIGILL the penryn binary:
-qemu-x86_64 -cpu Conroe build/release-penryn/bun -e 'console.log(Bun.version)'
+# Check the non-AVX SIMD gate without executing an unsupported opcode:
+unset BUN_CRASH_REPORT_URL
+export BUN_ENABLE_CRASH_REPORTING=0 DO_NOT_TRACK=1
+BUN_TEST_EXPECT_WASM_SIMD=0 BUN_JSC_useJIT=0 \
+  qemu-x86_64 -cpu Penryn build/release-penryn/bun test \
+  test/js/bun/jsc-stress/fixtures/simd-baseline.test.ts -t 'WebAssembly CPU feature gating'
+# Repeat with BUN_JSC_useWasmSIMD=1, BUN_JSC_useWasmIPIntSIMD=1 and
+# BUN_JSC_forceAllFunctionsToUseSIMD=1: the hardware gate must still win.
+# To check SIMD execution, change to -cpu Haswell and BUN_TEST_EXPECT_WASM_SIMD=1,
+# or run the binary natively on an AVX-capable CPU with that expectation.
 ```
 
 ## Troubleshooting

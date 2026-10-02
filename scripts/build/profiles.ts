@@ -180,22 +180,10 @@ export const profiles = {
   /**
    * Pre-SSE4.2 build targeting Penryn (late Core 2 Duo, 2008).
    *
-   * Runtime caveats — verified by disassembly of the produced binary:
-   *
-   *   1. WebAssembly v128 SIMD opcodes SIGILL. JSC's in-place WASM
-   *      interpreter (InPlaceInterpreter64.asm) emits AVX ops (vpshufb,
-   *      vroundps, vroundpd) unconditionally in `ipint_simd_*`.
-   *
-   *   2. WebAssembly i32.popcnt / i64.popcnt opcodes SIGILL. The LLInt
-   *      WASM interpreter's `ipint_i32_popcnt` / `ipint_i64_popcnt`
-   *      symbols emit native `popcntq` directly (Penryn lacks POPCNT;
-   *      Nehalem is the floor for that).
-   *
-   * Plain JS (all four JIT tiers, including FTL via runtime supportsAVX()
-   * fallbacks), Bun APIs, and WASM modules that don't use SIMD or popcnt
-   * all work. PCLMUL appears in the binary but only in zlib-ng's
-   * runtime-dispatched CRC32 fast path, and POPCNT also appears in
-   * simdutf's `westmere` kernel — both behind runtime CPU dispatch.
+   * WebAssembly SIMD requires AVX and is rejected on Penryn, including
+   * jitless execution. Scalar clz/ctz/popcnt use JSC's CPU-compatible fallbacks.
+   * Newer instructions can still appear in runtime-dispatched library
+   * kernels; their presence alone is not proof that a Penryn path uses them.
    */
   "release-penryn": {
     buildType: "Release",
