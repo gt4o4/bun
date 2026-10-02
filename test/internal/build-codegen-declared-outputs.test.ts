@@ -27,7 +27,9 @@ import { generateBuildOptionsRs } from "../../scripts/build/buildOptionsRs.ts";
 import { emitBindgen, emitBindgenV2, registerCodegenRules, type CodegenOutputs } from "../../scripts/build/codegen.ts";
 import { registerDirStamps } from "../../scripts/build/compile.ts";
 import { resolveConfig, type Config, type Toolchain } from "../../scripts/build/config.ts";
+import { generateDepVersionsHeader } from "../../scripts/build/depVersionsHeader.ts";
 import { Ninja } from "../../scripts/build/ninja.ts";
+import { profiles } from "../../scripts/build/profiles.ts";
 import { quote } from "../../scripts/build/shell.ts";
 import type { Sources } from "../../scripts/glob-sources.ts";
 
@@ -288,4 +290,50 @@ describe("generated Rust revision", () => {
         .filter(line => line.startsWith("pub const SHA:")),
     ).toEqual([`pub const SHA: &str = ${JSON.stringify(expected)};`]);
   });
+});
+
+describe("generated dependency versions without Git metadata", () => {
+  for (const profile of ["debug", "release-penryn", "release-nehalem", "release-haswell"] as const) {
+    test.each(["unknown", "", "0123456789abcdef0123456789abcdef01234567"])(
+      `${profile} declares required C++ constants for revision %j`,
+      revision => {
+        using dir = tempDir("dependency-versions-revision", {});
+        const cfg = resolveConfig(
+          {
+            ...profiles[profile],
+            os: "linux",
+            arch: "x64",
+            abi: "gnu",
+            buildDir: String(dir),
+            linuxSysroot: String(dir),
+          },
+          mockToolchain(),
+        );
+        const header = readFileSync(generateDepVersionsHeader({ ...cfg, revision }), "utf8");
+        // All dependency constants consumed by BunProcess.cpp's version table.
+        for (const name of [
+          "BORINGSSL",
+          "LIBARCHIVE",
+          "MIMALLOC",
+          "PICOHTTPPARSER",
+          "UWS",
+          "WEBKIT",
+          "ZIG",
+          "ZLIB_HASH",
+          "TINYCC",
+          "LOLHTML",
+          "C_ARES",
+          "LIBDEFLATE_HASH",
+          "USOCKETS",
+          "LSHPACK",
+          "ZSTD_HASH",
+        ]) {
+          expect(header).toMatch(new RegExp(`static constexpr const char\\* BUN_VERSION_${name} = "[^"\\n]+";`));
+        }
+        for (const name of ["UWS", "USOCKETS"]) {
+          expect(header).toContain(`static constexpr const char* BUN_VERSION_${name} = "${revision || "unknown"}";`);
+        }
+      },
+    );
+  }
 });
