@@ -151,6 +151,7 @@ let
   # Local WebKit source (deps/webkit.ts honours $BUN_WEBKIT_PATH). Shallow:
   # nothing reads history, and oven-sh/WebKit's full history is gigabytes.
   webkitSrc = fetchgit {
+    name = "source";
     url = "https://github.com/oven-sh/WebKit.git";
     rev = webkitRev;
     hash = "sha256-HQ57+ViT12ecoV2VMXq24JZSyN1h5yN3XZjxSuGun+I=";
