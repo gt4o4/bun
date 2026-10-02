@@ -30,7 +30,6 @@
   libdeflate,
   zlib-ng,
   hdrhistogram_c,
-  libuv,
   libhwy,
   libspng,
   libwebp,
@@ -255,7 +254,6 @@ stdenv.mkDerivation (finalAttrs: {
     libdeflate
     zlib-ng # flake.nix passes this with withZlibCompat=true (libz.so.1 soname)
     hdrhistogram_c
-    libuv
     libhwy # .a-only in nixpkgs; statically linked
     libspng
     libwebp

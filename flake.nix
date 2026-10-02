@@ -314,7 +314,6 @@
             stdenv = compatStdenv;
             zlib = zlib-ng;
           };
-          libuv = pkgs.libuv.override { stdenv = compatStdenv; };
           # libhwy tests link against gtest from unstable (built with glibc
           # 2.42 — carries __isoc23_*@2.38 refs). Disable the test build
           # since we only consume libhwy.a.
