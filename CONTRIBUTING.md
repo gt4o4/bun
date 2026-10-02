@@ -345,6 +345,12 @@ linker/ThinLTO workers within each process. The Nix derivation uses
 The system libraries below (their `-dev` packages) must be installed: in
 `systemDeps` mode the deps are linked with `-l<name>` from the toolchain's
 default search path and their headers resolve from the default include path.
+The shared libjpeg-turbo must include
+`patches/libjpeg-turbo/fatal-clears-warning.patch` and export
+`tj3BunCompletedWithWarning` in its TurboJPEG version map. The Nix package
+does this automatically; an unpatched distribution library will fail to link.
+This preserves Bun's rejection of fatal JPEG errors after a warning instead
+of accepting an incompletely written image buffer.
 
 ### What the profiles do
 

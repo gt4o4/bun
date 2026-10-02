@@ -306,10 +306,14 @@
           # resolvers), which a system c-ares would silently lose.
           # withZlibCompat=true keeps the libz.so.1 soname bun's -lz expects
           # (native zlib-ng ships libz-ng.so.2).
-          zlib-ng = pkgs.zlib-ng.override {
+          zlib-ng = (pkgs.zlib-ng.override {
             stdenv = compatStdenv;
             withZlibCompat = true;
-          };
+          }).overrideAttrs (old: {
+            # Match the vendored build's distance-too-far-back validation,
+            # including inflateBack() callers sharing this library.
+            cmakeFlags = (old.cmakeFlags or [ ]) ++ [ "-DWITH_INFLATE_STRICT=ON" ];
+          });
           hdrhistogram_c = pkgs.hdrhistogram_c.override {
             stdenv = compatStdenv;
             zlib = zlib-ng;
@@ -325,7 +329,17 @@
             ];
             doCheck = false;
           });
-          libjpeg = pkgs.libjpeg.override { stdenv = compatStdenv; };
+          libjpeg = (pkgs.libjpeg.override { stdenv = compatStdenv; }).overrideAttrs (old: {
+            # Bun must distinguish a completed decode with warnings from a
+            # fatal error after a warning, which can leave rows unwritten.
+            patches = (old.patches or [ ]) ++ [ ./patches/libjpeg-turbo/fatal-clears-warning.patch ];
+            postPatch = (old.postPatch or "") + ''
+              # The vendored static build needs no export map; our shared
+              # TurboJPEG must also export Bun's required safety accessor.
+              substituteInPlace src/turbojpeg-mapfile \
+                --replace-fail 'tj3GetErrorCode;' 'tj3GetErrorCode; tj3BunCompletedWithWarning;'
+            '';
+          });
           libspng = pkgs.libspng.override {
             stdenv = compatStdenv;
             zlib = zlib-ng;
@@ -337,7 +351,7 @@
           };
           libwebp = pkgs.libwebp.override {
             stdenv = compatStdenv;
-            libjpeg = pkgs.libjpeg.override { stdenv = compatStdenv; };
+            inherit libjpeg;
             # These dependencies only support WebP's helper executables.
             pngSupport = false;
             tiffSupport = false;

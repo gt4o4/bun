@@ -155,13 +155,16 @@ export const profiles = {
    *                         silently downgrades the nested build to
    *                         RelWithDebInfo (no -O3) when lto is off.
    *   dynamicLibstdcxx    — the compat host's libstdc++ is the target ABI.
-   *   systemDeps          — link unpatched, ABI-stable deps from the system
+   *   systemDeps          — link compatible shared deps from the system
    *                         instead of statically bundling them: shared-
    *                         library .text pages dedup across the several bun
    *                         processes these boxes run, an RSS win the static
    *                         build doesn't get. In `systemDeps` mode a dep's
    *                         `source()` returns `kind: "system"`, so its
    *                         tarball is never fetched.
+   *                         libjpeg-turbo requires Bun's fatal-error patch
+   *                         and exported warning-completion accessor; the
+   *                         Nix compat package supplies both.
    *
    * systemDeps membership: hdrhistogram and libhwy match bun's pin exactly
    * in nixpkgs; libhwy ships .a only (no runtime dedup, but skips a ~50 MB

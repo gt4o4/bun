@@ -162,6 +162,49 @@ describe("zlib.gunzip", () => {
   });
 });
 
+describe.each([64, 16 * 1024])("inflate declared window with chunkSize %d", chunkSize => {
+  // Fixed Huffman: literal 'a', length 258/distance 1, then length 3/distance 257.
+  // Both headers and Adler-32 are valid; only the second stream's 256-byte window is too small.
+  const valid = Buffer.from("18194b1c05c000000002786347", "hex");
+  const invalid = Buffer.from("081d4b1c05c000000002786347", "hex");
+  const expected = Buffer.alloc(262, "a");
+  const dataError = { code: "Z_DATA_ERROR", message: "invalid distance too far back" };
+
+  it.each(["inflateSync", "unzipSync"])("%s rejects a distance beyond the declared window", name => {
+    expect(zlib[name](valid, { chunkSize })).toEqual(expected);
+    let error;
+    try {
+      zlib[name](invalid, { chunkSize });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject(dataError);
+  });
+
+  it.concurrent.each(["createInflate", "createUnzip"])(
+    "%s rejects a distance beyond the declared window",
+    async name => {
+      async function decompress(input) {
+        const chunks = [];
+        await util.promisify(stream.pipeline)(
+          stream.Readable.from([input.subarray(0, 2), input.subarray(2)]),
+          zlib[name]({ chunkSize }),
+          new stream.Writable({
+            write(chunk, _encoding, callback) {
+              chunks.push(chunk);
+              callback();
+            },
+          }),
+        );
+        return Buffer.concat(chunks);
+      }
+
+      expect(await decompress(valid)).toEqual(expected);
+      await expect(decompress(invalid)).rejects.toMatchObject(dataError);
+    },
+  );
+});
+
 describe("one-shot results", () => {
   const input = Buffer.alloc(1024, "a");
   const pairs = [

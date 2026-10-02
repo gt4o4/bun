@@ -87,6 +87,8 @@ export const libjpegTurbo: Dependency = {
   source: cfg => {
     if (cfg.systemDeps.has("libjpeg-turbo")) {
       // <turbojpeg.h> / <jpeglib.h> resolve from the toolchain default include path.
+      // The shared library must carry fatal-clears-warning.patch and export
+      // tj3BunCompletedWithWarning, as the Nix compat package does.
       return {
         kind: "system",
         commit: LIBJPEG_TURBO_COMMIT,
