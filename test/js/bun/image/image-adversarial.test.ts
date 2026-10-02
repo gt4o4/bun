@@ -1038,6 +1038,27 @@ describe("memory hygiene", () => {
     return rss() - before;
   }
 
+  describe.each([false, true])("PNG output ownership (palette: %s)", palette => {
+    test.each(["bytes", "buffer", "blob", "toBase64"] as const)("%s survives repeated collection", async terminal => {
+      Bun.Image.backend = "bun";
+      async function encodeAndCheck() {
+        const image = new Bun.Image(tinyPng).png({ palette, colors: 16 });
+        const out = await image[terminal]();
+        const bytes =
+          out instanceof Blob ? await out.bytes() : typeof out === "string" ? Buffer.from(out, "base64") : out;
+        expect(bytes.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      }
+      // Return from the frame holding each output before collecting. bytes()
+      // and buffer() adopt the codec allocation; blob() and toBase64() free it
+      // immediately after copying, so both ownership paths must be paired.
+      for (let i = 0; i < 32; i++) {
+        await encodeAndCheck();
+        if ((i & 7) === 7) await gcTick();
+      }
+      await gcTick();
+    });
+  });
+
   test("decode/encode cycles plateau (no per-call leak after warmup)", async () => {
     const delta = await leakCheck(() => new Bun.Image(tinyPng).png().bytes());
     // 32 MB budget over 1500 calls = >21 KB/call would have to leak to fail.

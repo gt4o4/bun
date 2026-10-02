@@ -1,17 +1,16 @@
 //! libspng decode/encode for `Bun.Image`. Indexed-PNG encode quantises via
 //! `quantize.rs`. Dispatch lives in codecs.rs; this file is the codec body.
 
-use core::ffi::c_int;
+use core::ffi::{c_int, c_void};
 use core::ptr::NonNull;
 
 use super::codecs;
 use super::quantize;
-use crate::encoded_wrap_free;
 
 bun_opaque::opaque_ffi! { pub struct spng_ctx; }
 
 unsafe extern "C" {
-    fn spng_ctx_new(flags: c_int) -> *mut spng_ctx;
+    fn spng_ctx_new2(alloc: *const SpngAlloc, flags: c_int) -> *mut spng_ctx;
     fn spng_ctx_free(ctx: *mut spng_ctx);
     fn spng_set_png_buffer(ctx: *mut spng_ctx, buf: *const u8, len: usize) -> c_int;
     fn spng_decoded_image_size(ctx: *mut spng_ctx, fmt: c_int, out: *mut usize) -> c_int;
@@ -45,6 +44,55 @@ unsafe extern "C" {
     /// the context and freed with `spng_ctx_free`; dupe out before then.
     fn spng_get_iccp(ctx: *mut spng_ctx, iccp: *mut Iccp) -> c_int;
     fn spng_set_iccp(ctx: *mut spng_ctx, iccp: *const Iccp) -> c_int;
+}
+
+// A shared libspng can use a different malloc from Bun's local mimalloc
+// override. Supply the complete allocator pair so adopted PNG buffers can
+// always be freed by the default allocator, including in ASAN builds.
+#[repr(C)]
+struct SpngAlloc {
+    malloc_fn: extern "C" fn(usize) -> *mut c_void,
+    realloc_fn: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
+    calloc_fn: extern "C" fn(usize, usize) -> *mut c_void,
+    free_fn: unsafe extern "C" fn(*mut c_void),
+}
+
+extern "C" fn png_malloc(size: usize) -> *mut c_void {
+    bun_alloc::default_alloc::malloc(size)
+}
+
+unsafe extern "C" fn png_realloc(ptr: *mut c_void, size: usize) -> *mut c_void {
+    // SAFETY: libspng only passes null or allocations from this allocator.
+    unsafe { bun_alloc::default_alloc::realloc(ptr, size) }
+}
+
+extern "C" fn png_calloc(count: usize, size: usize) -> *mut c_void {
+    let Some(len) = count.checked_mul(size) else {
+        return core::ptr::null_mut();
+    };
+    let ptr = bun_alloc::default_alloc::malloc(len);
+    if !ptr.is_null() {
+        // SAFETY: the allocation has room for `len` bytes.
+        unsafe { ptr.cast::<u8>().write_bytes(0, len) };
+    }
+    ptr
+}
+
+unsafe extern "C" fn png_free(ptr: *mut c_void) {
+    // SAFETY: libspng only passes null or allocations from this allocator.
+    unsafe { bun_alloc::default_alloc::free(ptr) };
+}
+
+fn new_context(flags: c_int) -> *mut spng_ctx {
+    static ALLOCATOR: SpngAlloc = SpngAlloc {
+        malloc_fn: png_malloc,
+        realloc_fn: png_realloc,
+        calloc_fn: png_calloc,
+        free_fn: png_free,
+    };
+    // SAFETY: all four C callbacks are valid and paired. libspng copies the
+    // table into the context; the table and callbacks also have static lifetime.
+    unsafe { spng_ctx_new2(&raw const ALLOCATOR, flags) }
 }
 
 #[repr(C)]
@@ -102,13 +150,12 @@ struct Trns {
 
 pub(crate) fn decode(bytes: &[u8], max_pixels: u64) -> Result<codecs::Decoded, codecs::Error> {
     // Skip adler32 and chunk-CRC verification (as libvips and stb_image do); they only cost decode time.
-    // SAFETY: spng_ctx_new is safe to call with any flags; null return = OOM.
-    let ctx = unsafe { spng_ctx_new(SPNG_CTX_IGNORE_ADLER32) };
+    let ctx = new_context(SPNG_CTX_IGNORE_ADLER32);
     if ctx.is_null() {
         return Err(codecs::Error::OutOfMemory);
     }
     let _ctx_guard = scopeguard::guard(ctx, |c| {
-        // SAFETY: ctx was returned non-null by spng_ctx_new and is freed exactly once here.
+        // SAFETY: ctx was returned non-null by new_context and is freed exactly once here.
         unsafe { spng_ctx_free(c) }
     });
 
@@ -211,13 +258,12 @@ pub(crate) fn encode(
     level: i8,
     icc_profile: Option<&[u8]>,
 ) -> Result<codecs::Encoded, codecs::Error> {
-    // SAFETY: spng_ctx_new is safe to call; null return = OOM.
-    let ctx = unsafe { spng_ctx_new(SPNG_CTX_ENCODER) };
+    let ctx = new_context(SPNG_CTX_ENCODER);
     if ctx.is_null() {
         return Err(codecs::Error::OutOfMemory);
     }
     let _ctx_guard = scopeguard::guard(ctx, |c| {
-        // SAFETY: ctx was returned non-null by spng_ctx_new and is freed exactly once here.
+        // SAFETY: ctx was returned non-null by new_context and is freed exactly once here.
         unsafe { spng_ctx_free(c) }
     });
 
@@ -260,13 +306,13 @@ pub(crate) fn encode(
     if buf.is_null() {
         return Err(codecs::Error::EncodeFailed);
     }
-    // spng_get_png_buffer transfers ownership (libc malloc); hand to JS
-    // with libc `free` as the finalizer instead of duping.
-    // SAFETY: buf is non-null and points to `len` bytes owned by us (malloc'd by libspng).
+    // spng_get_png_buffer transfers ownership; hand to JS with the same
+    // default allocator as the context instead of duping.
+    // SAFETY: buf is non-null and points to `len` bytes from the context's default allocator.
     let bytes = unsafe { NonNull::new_unchecked(core::ptr::slice_from_raw_parts_mut(buf, len)) };
     Ok(codecs::Encoded {
         bytes,
-        free: encoded_wrap_free!(libc::free),
+        free: bun_alloc::c_thunks::mi_free_bytes,
     })
 }
 
@@ -296,13 +342,12 @@ pub(crate) fn encode_indexed(
     )
     .map_err(|_| codecs::Error::OutOfMemory)?;
 
-    // SAFETY: spng_ctx_new is safe to call; null return = OOM.
-    let ctx = unsafe { spng_ctx_new(SPNG_CTX_ENCODER) };
+    let ctx = new_context(SPNG_CTX_ENCODER);
     if ctx.is_null() {
         return Err(codecs::Error::OutOfMemory);
     }
     let _ctx_guard = scopeguard::guard(ctx, |c| {
-        // SAFETY: ctx was returned non-null by spng_ctx_new and is freed exactly once here.
+        // SAFETY: ctx was returned non-null by new_context and is freed exactly once here.
         unsafe { spng_ctx_free(c) }
     });
 
@@ -378,10 +423,10 @@ pub(crate) fn encode_indexed(
     if buf.is_null() {
         return Err(codecs::Error::EncodeFailed);
     }
-    // SAFETY: buf is non-null and points to `len` bytes owned by us (malloc'd by libspng).
+    // SAFETY: buf is non-null and points to `len` bytes from the context's default allocator.
     let bytes = unsafe { NonNull::new_unchecked(core::ptr::slice_from_raw_parts_mut(buf, len)) };
     Ok(codecs::Encoded {
         bytes,
-        free: encoded_wrap_free!(libc::free),
+        free: bun_alloc::c_thunks::mi_free_bytes,
     })
 }
